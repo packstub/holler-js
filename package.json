@@ -1,0 +1,42 @@
+{
+    "name": "@packstub/calls",
+    "version": "0.1.0",
+    "description": "1-on-1 WebRTC calls (audio, video, screen share) with a pluggable signaling backend. Framework-agnostic; the engine behind packstub/calls and packstub/filament-calls.",
+    "type": "module",
+    "main": "src/index.js",
+    "module": "src/index.js",
+    "exports": {
+        ".": "./src/index.js"
+    },
+    "files": [
+        "src"
+    ],
+    "keywords": [
+        "webrtc",
+        "video-call",
+        "voice-call",
+        "screen-share",
+        "peer-to-peer",
+        "signaling",
+        "perfect-negotiation"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/packstub/calls-js"
+    },
+    "homepage": "https://github.com/packstub/calls-js",
+    "bugs": "https://github.com/packstub/calls-js/issues",
+    "author": "Ion Caliman <icaliman92@gmail.com>",
+    "license": "MIT",
+    "sideEffects": false,
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "devDependencies": {
+        "vitest": "^3.2.4"
+    }
+}

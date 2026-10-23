@@ -10,7 +10,7 @@
  *   start(userId, tab)                → call
  *   answer(callId, tab)               → call
  *   decline(callId) / hangup(callId)  → call
- *   send(callId, type, payload)       → void       (offer | answer | ice | reset)
+ *   send(callId, type, payload)       → void       (offer | answer | ice | reset | state)
  *   poll({ after, call, tab, hold })  → { call, incoming, signals, cursor }   (hold: this window wants the side)
  *   leave(callId, tab)                → void       (optional; a beacon as the page unloads)
  *
@@ -31,6 +31,7 @@
  *   update      { call }    the call's server state changed (held, peer_held, status…)
  *   localstream { stream }  your camera/mic (or screen) stream, also after a share switch
  *   remotestream{ stream }  the other side's media
+ *   peerstate   { muted, cameraOff, sharing }  the other side muted, turned the camera off or shares the screen
  *   ended       { call, reason }  declined | cancelled | missed | hung_up | failed | dropped | busy
  *   error       { error }
  */
@@ -155,6 +156,10 @@ export class CallClient extends EventTarget {
         this.negotiated = false
         this.muted = false
         this.cameraOff = false
+        // What the other side told us about itself (a `state` signal).
+        this.peerMuted = false
+        this.peerCameraOff = false
+        this.peerSharing = false
         this.timer = null
         this.dropTimer = null
         this.polling = false
@@ -392,16 +397,76 @@ export class CallClient extends EventTarget {
         if (this.call && this.pc) this.signaling.leave?.(this.call.id, this.tab)
     }
 
+    /**
+     * This window continues a call of mine that no window holds any more (the
+     * pop-out closed): a call still ringing me rings here again, a running one is
+     * resumed here. Resolves to whether this window has the call now; false while
+     * another window still holds it (the claim on the server decides, so a pop-out
+     * that is merely reloading keeps its side).
+     */
+    async takeOver() {
+        if (this.state !== 'elsewhere' || ! this.call || this.pc) return false
+
+        // What this window knows may be seconds old (a pop-out answers and claims the call
+        // right after it opens): a look at the server first, without claiming anything.
+        let fresh
+        try {
+            fresh = await this.signaling.poll({ after: this.cursor, call: this.call.id, tab: this.tab })
+        } catch (error) {
+            this.emit('error', { error })
+            return false
+        }
+
+        if (! this.call || this.state !== 'elsewhere') return false
+
+        if (! fresh.call || fresh.call.status === 'ended') {
+            this.finish(fresh.call?.end_reason || 'hung_up')
+            return false
+        }
+
+        this.call = { ...this.call, ...fresh.call }
+        this.emit('update', { call: this.call })
+        if (this.call.held) return false
+
+        const call = this.call
+
+        if (call.status === 'ringing' && call.role === 'callee') {
+            this.setState('ringing')
+            this.emit('incoming', { call })
+
+            return true
+        }
+
+        await this.resume(call)
+
+        return this.call !== null && this.state !== 'elsewhere'
+    }
+
     // ---- media controls ------------------------------------------------------
 
     setMuted(muted) {
         this.muted = muted
         this.cameraStream?.getAudioTracks().forEach((track) => { track.enabled = ! muted })
+        this.announceState()
     }
 
     setCameraOff(off) {
         this.cameraOff = off
         this.cameraStream?.getVideoTracks().forEach((track) => { track.enabled = ! off })
+        this.announceState()
+    }
+
+    /**
+     * Tell the other side about my mute, camera and screen share, once there is a
+     * connection to tell it over. A change is always sent; the announcement after a
+     * negotiation only when something is on, since a fresh connection starts with
+     * everything off on both sides.
+     */
+    announceState(changed = true) {
+        if (! this.pc || ! this.call) return
+        if (! changed && ! this.muted && ! this.cameraOff && ! this.sharing) return
+
+        this.send('state', { muted: this.muted, cameraOff: this.cameraOff, sharing: this.sharing })
     }
 
     get sharing() {
@@ -418,6 +483,7 @@ export class CallClient extends EventTarget {
 
         await this.replaceVideo(track)
         this.publishLocal()
+        this.announceState()
     }
 
     async stopSharing() {
@@ -428,6 +494,7 @@ export class CallClient extends EventTarget {
 
         await this.replaceVideo(this.cameraStream?.getVideoTracks()[0] ?? null)
         this.publishLocal()
+        this.announceState()
     }
 
     async replaceVideo(track) {
@@ -569,14 +636,27 @@ export class CallClient extends EventTarget {
 
         try {
             if (type === 'reset') {
-                // The other side is back on a fresh page: a new connection for its new offer.
+                // The other side is back on a fresh page: a new connection for its new offer,
+                // and everything off there until it says otherwise.
                 this.peerSession = payload.session
                 this.createPeer(true)
                 if (this.state === 'active' || this.state === 'reconnecting') this.setState('connecting')
+                if (this.peerMuted || this.peerCameraOff || this.peerSharing) {
+                    this.peerMuted = this.peerCameraOff = this.peerSharing = false
+                    this.emit('peerstate', { muted: false, cameraOff: false, sharing: false })
+                }
                 return
             }
 
             if (this.peerSession && payload.session && payload.session !== this.peerSession) return
+
+            if (type === 'state') {
+                this.peerMuted = Boolean(payload.muted)
+                this.peerCameraOff = Boolean(payload.cameraOff)
+                this.peerSharing = Boolean(payload.sharing)
+                this.emit('peerstate', { muted: this.peerMuted, cameraOff: this.peerCameraOff, sharing: this.peerSharing })
+                return
+            }
 
             if (type === 'offer') {
                 const collision = this.makingOffer || pc.signalingState !== 'stable'
@@ -589,12 +669,15 @@ export class CallClient extends EventTarget {
                 await pc.setLocalDescription()
                 this.negotiated = true
                 this.send('answer', { sdp: pc.localDescription.sdp })
+                // The other side (new, or back on a fresh page) learns what I have on.
+                this.announceState(false)
             } else if (type === 'answer') {
                 if (pc.signalingState !== 'have-local-offer') return
                 this.peerSession ??= payload.session ?? null
                 await pc.setRemoteDescription({ type: 'answer', sdp: sdp(payload.sdp) })
                 await this.flushCandidates()
                 if (this.state === 'calling') this.setState('connecting')
+                this.announceState(false)
             } else if (type === 'ice') {
                 if (! pc.remoteDescription) {
                     this.pendingCandidates.push(payload)
@@ -646,6 +729,7 @@ export class CallClient extends EventTarget {
         this.buffered = []
         this.pendingCandidates = []
         this.resumeId = null
+        this.peerMuted = this.peerCameraOff = this.peerSharing = false
         this.setState('idle')
     }
 

@@ -46,8 +46,9 @@ client.addEventListener('ended', ({ detail: { reason } }) => showNotice(reason))
 client.start()                      // poll for incoming calls
 await client.callUser(userId)       // ring someone
 await client.accept()               // or answer the call that is ringing
-client.setMuted(true)
+client.setMuted(true)               // the other side hears about it (peerstate)
 await client.shareScreen()
+await client.takeOver()             // a tab in `elsewhere` continues a call its pop-out let go of
 await client.hangUp()
 
 window.addEventListener('pagehide', () => client.leave())
@@ -66,6 +67,7 @@ window.addEventListener('pagehide', () => client.leave())
 | `update` | `{ call }` | the call's server state changed (`held`, `peer_held`, `status`) |
 | `localstream` | `{ stream }` | your camera and microphone, or the screen while sharing |
 | `remotestream` | `{ stream }` | the other side's media (fires again as tracks arrive) |
+| `peerstate` | `{ muted, cameraOff, sharing }` | the other side muted, turned the camera off or started sharing the screen (also `client.peerMuted`, `peerCameraOff`, `peerSharing`) |
 | `ended` | `{ call, reason }` | `declined`, `cancelled`, `missed`, `hung_up`, `failed`, `dropped`, `busy` |
 | `error` | `{ error, media? }` | a request or media failure; `media: true` when the camera or microphone could not be opened |
 
@@ -88,7 +90,7 @@ start(userId, tab)               → call
 answer(callId, tab)              → call
 decline(callId)                  → call
 hangup(callId)                   → call
-send(callId, type, payload)      → void     // offer | answer | ice | reset
+send(callId, type, payload)      → void     // offer | answer | ice | reset | state
 poll({ after, call, tab, hold }) → { call, incoming, signals, cursor }
 leave(callId, tab)               → void     // optional, a beacon as the page unloads
 ```

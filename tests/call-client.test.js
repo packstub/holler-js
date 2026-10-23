@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CallClient } from '../src/index.js'
 import { FakeRTCPeerConnection, FakeServer, FakeTrack, fakeDevices, installBrowserGlobals } from './fakes.js'
 
-const EVENTS = ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'ended', 'error']
+const EVENTS = ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'peerstate', 'ended', 'error']
 
 let server
 let devices
@@ -317,6 +317,64 @@ describe('in the call', () => {
         expect(video.enabled).toBe(false)
     })
 
+    it('tells the other side about mute, camera and screen share as they change', async () => {
+        const { ion, ana } = await connect()
+        // Nothing was on: no state signal travelled with the offer and the answer.
+        expect(server.log.filter(([, action, , type]) => action === 'send' && type === 'state')).toEqual([])
+
+        ion.setMuted(true)
+        await settle()
+        expect(ana.events('peerstate').at(-1)).toMatchObject({ muted: true, cameraOff: false, sharing: false })
+        expect(ana.peerMuted).toBe(true)
+
+        await ion.shareScreen()
+        ion.setCameraOff(true)
+        await settle()
+        expect(ana.events('peerstate').at(-1)).toMatchObject({ muted: true, cameraOff: true, sharing: true })
+
+        ion.setMuted(false)
+        await ion.stopSharing()
+        await settle()
+        expect(ana.events('peerstate').at(-1)).toMatchObject({ muted: false, cameraOff: true, sharing: false })
+        expect(ana.peerCameraOff).toBe(true)
+        expect(ana.peerSharing).toBe(false)
+    })
+
+    it('announces what is on to a side that joins or comes back, and forgets a side that resets', async () => {
+        const ion = client('ion')
+        const ana = client('ana')
+        ion.start()
+        ana.start()
+        ion.setMuted(true)
+
+        await ion.callUser('ana')
+        await settle()
+        await ana.accept()
+        await settle()
+
+        // Ana learned it from the answer exchange, not from a change.
+        expect(ana.peerMuted).toBe(true)
+        expect(server.sent('ana').map((signal) => signal.type)).toEqual(['offer', 'state'])
+
+        // Ion reloads: his fresh page starts unmuted, and Ana stops showing him as muted.
+        ion.leave()
+        ion.stop()
+        const reloaded = client('ion')
+        reloaded.start()
+        await settle()
+
+        expect(ana.events('peerstate').at(-1)).toMatchObject({ muted: false, cameraOff: false, sharing: false })
+        expect(ana.peerMuted).toBe(false)
+
+        // Ana was muted meanwhile: the reloaded page hears about it with the answer.
+        ana.setMuted(true)
+        await settle()
+        expect(reloaded.peerMuted).toBe(true)
+
+        await reloaded.hangUp()
+        expect(reloaded.peerMuted).toBe(false)
+    })
+
     it('falls back to a voice call when there is no camera', async () => {
         installBrowserGlobals(fakeDevices({ camera: false }))
         const ion = client('ion')
@@ -533,6 +591,120 @@ describe('windows and reconnecting', () => {
         expect(server.calls.get(callId).status).toBe('ended')
         expect(ion.state).toBe('idle')
         expect(ion.events('ended')[0].reason).toBe('hung_up')
+    })
+
+    it('lets the main tab take a running call back once its pop-out closed, and not while the pop-out holds it', async () => {
+        const { ion, ana, callId } = await connect()
+        const main = client('ion', { resumes: false })
+        main.start()
+        await settle()
+        expect(main.state).toBe('elsewhere')
+
+        // The pop-out is alive: the claim on the server says no.
+        await expect(main.takeOver()).resolves.toBe(false)
+        expect(main.state).toBe('elsewhere')
+        expect(main.pc).toBeNull()
+        expect(server.calls.get(callId).caller_tab).toBe(ion.tab)
+
+        // The pop-out closes.
+        ion.leave()
+        ion.stop()
+        await settle()
+        expect(main.call.held).toBe(false)
+        expect(main.state).toBe('elsewhere')
+
+        await expect(main.takeOver()).resolves.toBe(true)
+        await settle()
+
+        expect(server.calls.get(callId).caller_tab).toBe(main.tab)
+        expect(main.pc).not.toBeNull()
+        expect(server.sent('ana').filter((signal) => signal.payload.session === main.session).map((signal) => signal.type)).toEqual(['reset', 'offer'])
+        expect(ana.pc.remoteDescription.type).toBe('offer')
+        expect(main.pc.remoteDescription.type).toBe('answer')
+        main.pc.setConnectionState('connected')
+        await settle()
+        expect(main.state).toBe('active')
+    })
+
+    it('rings the main tab again when the pop-out opened to answer closed without answering', async () => {
+        const ion = client('ion')
+        const main = client('ana', { resumes: false })
+        ion.start()
+        main.start()
+        await ion.callUser('ana')
+        await settle()
+
+        main.handOff()
+        expect(main.state).toBe('elsewhere')
+        await settle()
+
+        await expect(main.takeOver()).resolves.toBe(true)
+        expect(main.state).toBe('ringing')
+        expect(main.events('incoming')).toHaveLength(2)
+        expect(main.pc).toBeNull()
+
+        await main.accept()
+        await settle()
+        expect(server.calls.get(1)).toMatchObject({ status: 'active', callee_tab: main.tab })
+    })
+
+    it('looks at the server before taking over: a call the pop-out answered meanwhile is resumed, not rung again', async () => {
+        const ion = client('ion')
+        const main = client('ana', { resumes: false })
+        ion.start()
+        main.start()
+        await ion.callUser('ana')
+        await settle()
+
+        // The pop-out opens; the main tab's last poll saw the call ringing and held by nobody.
+        main.handOff()
+        await settle()
+        expect(main.call).toMatchObject({ status: 'ringing', held: false })
+        main.stop()
+
+        const popOut = client('ana')
+        popOut.resumeCall(main.call.id, { answer: true })
+        await settle()
+        expect(server.calls.get(1)).toMatchObject({ status: 'active', callee_tab: popOut.tab })
+        expect(main.call.status).toBe('ringing')
+
+        // The pop-out is alive: nothing happens, and the main tab now knows the call is active and held.
+        main.start()
+        await expect(main.takeOver()).resolves.toBe(false)
+        expect(main.state).toBe('elsewhere')
+        expect(main.call).toMatchObject({ status: 'active', held: true })
+
+        // The pop-out closes: the main tab resumes the running call instead of ringing it.
+        popOut.leave()
+        popOut.stop()
+        await expect(main.takeOver()).resolves.toBe(true)
+        expect(main.state).not.toBe('ringing')
+        expect(main.pc).not.toBeNull()
+        expect(server.calls.get(1).callee_tab).toBe(main.tab)
+    })
+
+    it('ends on takeOver when the call ended meanwhile', async () => {
+        const { ion, callId } = await connect()
+        const main = client('ion', { resumes: false })
+        main.start()
+        await settle()
+        expect(main.state).toBe('elsewhere')
+        main.stop()
+
+        await ion.hangUp()
+        await expect(main.takeOver()).resolves.toBe(false)
+        expect(main.state).toBe('idle')
+        expect(main.events('ended')[0]).toMatchObject({ reason: 'hung_up', call: { id: callId } })
+    })
+
+    it('does nothing for takeOver outside the elsewhere state', async () => {
+        const { ion } = await connect()
+
+        await expect(ion.takeOver()).resolves.toBe(false)
+        expect(ion.state).toBe('active')
+
+        const idle = client('ana')
+        await expect(idle.takeOver()).resolves.toBe(false)
     })
 
     it('stops polling when stopped', async () => {

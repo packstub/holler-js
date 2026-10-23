@@ -164,6 +164,7 @@ export class CallClient extends EventTarget {
         this.dropTimer = null
         this.polling = false
         this.inFlight = null
+        this.takingOver = null
         this.makingOffer = false
         this.ignoreOffer = false
     }
@@ -404,7 +405,14 @@ export class CallClient extends EventTarget {
      * another window still holds it (the claim on the server decides, so a pop-out
      * that is merely reloading keeps its side).
      */
-    async takeOver() {
+    takeOver() {
+        // Asked again while the first take-over runs (its own updates can ask): the same answer.
+        this.takingOver ??= this.doTakeOver().finally(() => { this.takingOver = null })
+
+        return this.takingOver
+    }
+
+    async doTakeOver() {
         if (this.state !== 'elsewhere' || ! this.call || this.pc) return false
 
         // What this window knows may be seconds old (a pop-out answers and claims the call

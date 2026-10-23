@@ -683,6 +683,30 @@ describe('windows and reconnecting', () => {
         expect(server.calls.get(1).callee_tab).toBe(main.tab)
     })
 
+    it('takes over once when asked again while the first take-over runs', async () => {
+        const { ion, callId } = await connect()
+        const main = client('ion', { resumes: false })
+        main.start()
+        await settle()
+        ion.leave()
+        ion.stop()
+        await settle()
+
+        // The UI asks twice: once on "the pop-out closed", once on the update the take-over itself emits.
+        let fromUpdate = null
+        main.addEventListener('update', () => { fromUpdate ??= main.takeOver() })
+        const connections = FakeRTCPeerConnection.instances.length
+        const results = await Promise.all([main.takeOver(), main.takeOver()])
+        await settle()
+
+        expect(results).toEqual([true, true])
+        await expect(fromUpdate).resolves.toBe(true)
+        expect(server.sent('ana').filter((signal) => signal.type === 'reset')).toHaveLength(1)
+        expect(server.log.filter(([user, action, call, tab, hold]) => user === 'ion' && action === 'poll' && hold && tab === main.tab && call === callId).length).toBeGreaterThan(0)
+        // One new connection in the main tab, one on Ana's side for the reset.
+        expect(FakeRTCPeerConnection.instances.length).toBe(connections + 2)
+    })
+
     it('ends on takeOver when the call ended meanwhile', async () => {
         const { ion, callId } = await connect()
         const main = client('ion', { resumes: false })

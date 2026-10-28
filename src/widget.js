@@ -266,16 +266,13 @@ function ringer() {
     }
 }
 
-/** The pop-out by its name, when it is open and showing a page of ours; null otherwise (a blank window opened by the lookup is closed again). */
-function findOpenWindow() {
+/** The pop-out by its name: `{ window, blank }`, blank when the lookup itself opened an empty one; null when blocked or not ours. */
+function findWindow() {
     try {
         const found = window.open('', 'packstub-calls')
         if (! found) return null
-        if (found.location.href === 'about:blank') {
-            found.close()
-            return null
-        }
-        return found.location.origin === location.origin ? found : null
+        if (found.location.href === 'about:blank') return { window: found, blank: true }
+        return found.location.origin === location.origin ? { window: found, blank: false } : null
     } catch {
         return null
     }
@@ -655,8 +652,8 @@ export class CallWidget extends EventTarget {
         return opened
     }
 
-    /** Open the pop-out; false when the browser blocked it (then the call stays on this page). */
-    openWindow(params) {
+    /** Open the pop-out (in `into`, a blank window already open, when given); false when the browser blocked it (then the call stays on this page). */
+    openWindow(params, into = null) {
         if (! this.windowUrl) return false
 
         const token = Math.random().toString(36).slice(2) + Date.now().toString(36)
@@ -670,7 +667,12 @@ export class CallWidget extends EventTarget {
             // No storage: the pop-out shows the call and waits for a click.
         }
 
-        this.popupWindow = window.open(url, 'packstub-calls', this.windowFeatures)
+        if (into) {
+            into.location.replace(url)
+            this.popupWindow = into
+        } else {
+            this.popupWindow = window.open(url, 'packstub-calls', this.windowFeatures)
+        }
         if (! this.popupWindow) {
             try { localStorage.removeItem(key) } catch {}
         }
@@ -681,12 +683,21 @@ export class CallWidget extends EventTarget {
 
     /** Bring the pop-out back; open it again if it was closed, or continue the call here when that is blocked. */
     focusWindow() {
-        // After this page reloaded it lost the handle: find the open pop-out by name before opening
-        // a new one, which would load it again in the middle of the call.
-        if (! this.popupWindow || this.popupWindow.closed) this.popupWindow = findOpenWindow()
+        if (this.popupWindow && ! this.popupWindow.closed) {
+            this.popupWindow.focus()
+            return
+        }
 
-        if (this.popupWindow && ! this.popupWindow.closed) this.popupWindow.focus()
-        else if (this.call && ! this.openWindow({ call: this.call.id })) this.takeBack()
+        // A closed handle: the window is gone, open it again. No handle (this page reloaded): the
+        // pop-out may still be open, so look it up by name; opening it would reload it mid-call.
+        // The lookup opens a blank window when there is none, which then takes the pop-out page.
+        const found = this.popupWindow ? null : findWindow()
+        if (found && ! found.blank) {
+            this.popupWindow = found.window
+            found.window.focus()
+        } else if (this.call && ! this.openWindow({ call: this.call.id }, found?.window)) {
+            this.takeBack()
+        }
     }
 
     /**

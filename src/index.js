@@ -536,7 +536,7 @@ export class CallClient extends EventTarget {
      * @param {(constraints: MediaStreamConstraints) => Promise<MediaStream>} [options.getUserMedia]
      * @param {'all'|'relay'} [options.iceTransportPolicy]  `relay`: everything through TURN, nobody learns the other's addresses
      * @param {'video'|'audio'|'none'} [options.media]  what a call starts with (default: `video` per the `video` option); `none` connects without asking for the camera or the microphone, for a call that only needs data channels until `startMedia()`
-     * @param {string[]} [options.channels]  data channels to open to every peer (ordered), surfaced by the `datachannel` event
+     * @param {string[]} [options.channels]  data channels to open to every peer (ordered), surfaced by the `datachannel` event; channels pair by their place in this list, so every participant lists the same labels in the same order
      */
     constructor({ signaling, iceServers = [], video = true, poll = {}, reconnectTimeout = 15000, resumes = true, maxParticipants = 4, topology = null, getUserMedia, iceTransportPolicy = 'all', media = null, channels = [] } = {}) {
         super()
@@ -859,7 +859,8 @@ export class CallClient extends EventTarget {
         // The caller gave up (or the call was declined elsewhere) while the prompt was open.
         if (epoch !== this.epoch || this.call?.id !== callId) {
             this.joining = false
-            if (! this.call) this.releaseMedia()
+            // The camera stays when a call placed meanwhile is about to use it.
+            if (! this.call && ! this.placing) this.releaseMedia()
             return
         }
 

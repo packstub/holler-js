@@ -78,7 +78,7 @@ channel.send(JSON.stringify(message))
 await client.startMedia('audio')
 ```
 
-Both sides make each channel with an id agreed in advance (its place in `channels`), so they pair up whichever side offers; both get `datachannel` once it is open. `media: 'none'` needs at least one channel. After either side reloads, the new connection opens them again. `client.channel(label, peerId)` returns the open one.
+Both sides make each channel with an id agreed in advance (its place in `channels`, so every participant lists the same labels in the same order), so they pair up whichever side offers; both get `datachannel` once it is open. `media: 'none'` needs at least one channel. After either side reloads, the new connection opens them again. `client.channel(label, peerId)` returns the open one.
 
 A 1-on-1 call needs none of the group pieces: `remoteVideo.srcObject = stream` on `remotestream` and `client.peer` for the one other person still work.
 

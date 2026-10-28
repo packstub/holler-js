@@ -334,3 +334,28 @@ describe('review fixes', () => {
         expect(ion.pc.senders.find((sender) => sender.__video).track.kind).toBe('video')
     })
 })
+
+describe('second review', () => {
+    it('keeps the camera for a call placed while the Accept prompt was open', async () => {
+        const ion = client('ion')
+        const ana = client('ana')
+        ion.start()
+        ana.start()
+        await ion.callUser('ana')
+        await settle()
+
+        let allow
+        devices.getUserMedia.mockImplementationOnce(() => new Promise((resolve) => { allow = resolve }))
+        const answering = ana.accept()
+        const placing = ana.callUser('mihai')
+        await settle(10)
+        const { FakeMediaStream, FakeTrack } = await import('./fakes.js')
+        allow(new FakeMediaStream([new FakeTrack('audio')]))
+        await answering
+        await placing
+
+        expect(ana.state).toBe('calling')
+        expect(ana.cameraStream.getTracks()[0].readyState).toBe('live')
+        expect(ana.pc.senders.map((sender) => sender.track.readyState)).toEqual(['live'])
+    })
+})

@@ -1,11 +1,12 @@
 # @packstub/calls
 
-WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small groups, with a pluggable signaling backend and a pluggable topology. The engine behind [Calls for Laravel](https://github.com/packstub/calls) and [Filament Calls](https://github.com/packstub/filament-calls); no DOM, no framework, one ES module.
+WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small groups, with a pluggable signaling backend and a pluggable topology. The engine behind [Calls for Laravel](https://github.com/packstub/calls) and [Filament Calls](https://github.com/packstub/filament-calls): plain ES modules, no build step, no dependencies. The engine (`@packstub/calls`) has no DOM and no framework; [`CallWidget`](#the-widget) (`@packstub/calls/widget`) is a ready-made UI on top of it.
 
 - `CallClient` owns the local media and the roster of a call: who is in, who is ringing, who muted, whose media flows. Perfect negotiation per pair (the lower seat offers), ICE candidates applied in order, screen share by track replacement, voice fallback when there is no camera, mute and camera off.
 - `MeshTopology` is how media travels by default: a direct `RTCPeerConnection` to every other participant, so no server touches the media. Right for up to four people; the `topology` option takes an SFU or relay adapter for bigger rooms, and the client never knows the difference.
 - A call survives a full page load: every window has a random `tab` id, a participant's side belongs to one window at a time, a fresh page claims the side, asks each peer for a new connection (`reset`) and offers again. Signals carry a session id so leftovers from an old connection are ignored.
 - `HttpSignaling` is the signaling adapter that ships: plain JSON endpoints, polled. A websocket or any other transport implements the same methods.
+- `CallWidget` draws the incoming toast, the call window, the chip and notices in plain DOM, with templates, labels and CSS custom properties to make it yours.
 
 ## Install
 
@@ -29,6 +30,7 @@ const client = new CallClient({
             signal: '/calls/__ID__/signals',
             leave: '/calls/__ID__/leave',
             invite: '/calls/__ID__/invite',     // optional: adding people to a running call
+            ice: '/calls/ice-servers',          // optional: ICE servers asked per call (configuration())
         },
         headers: { 'X-CSRF-TOKEN': token },
         beaconFields: { _token: token },
@@ -124,6 +126,27 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `topology` | a `MeshTopology` per call | how media travels: a topology instance, a class, or `(call, client) => topology` to pick one per call from its `peers` |
 | `getUserMedia` | `navigator.mediaDevices.getUserMedia` | override for tests or custom constraints |
 
+### Methods and properties
+
+| Method | Does |
+| --- | --- |
+| `start()` / `stop()` | begin and stop polling (`start()` also polls at once when a hidden tab is shown again) |
+| `callUser(id \| ids)` | ring one person or a group |
+| `accept()` / `decline()` | answer or refuse the call that rings |
+| `invite(id)`, `canInvite()` | add someone to the running call; whether one more fits |
+| `hangUp()` | leave the call (it goes on for the others) |
+| `setMuted(bool)`, `setCameraOff(bool)` | tell everyone else as well (`peerstate`) |
+| `shareScreen()`, `stopSharing()` | the screen in place of the camera, and back |
+| `startMedia('audio' \| 'video')` | add media to a call that started with less, renegotiating every connection |
+| `channel(label, peerId?)` | the open data channel to a peer (the first peer by default), or null |
+| `resumeCall(callId?, { answer })` | pick up a call of mine on this page: the one named (answering it when `answer` is set), or whatever the server still has me in; for a pop-out window |
+| `handOff()` | this window steps back to `elsewhere` while another window (a pop-out) answers or continues the call |
+| `takeOver()` | a window in `elsewhere` continues a call nobody holds any more (its pop-out closed) |
+| `leave()` | the `leave` beacon, for `pagehide` |
+| `destroy()` | stop polling, let go of the call and close the connections and the camera, without events |
+
+Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `muted`, `cameraOff`, `sharing`, `tab` (this window's id), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
+
 ## Topologies
 
 A topology owns the connections; the client owns everything else (media, roster, signaling, states). `MeshTopology` ships: one `RTCPeerConnection` per peer, each participant uploads one copy of its media per peer, which is what makes four the sensible ceiling. For bigger rooms, an SFU or a relay adapter implements the same interface, and it can be chosen per call:
@@ -169,6 +192,7 @@ invite(callId, userId)               → call     // optional; add someone to a 
 send(callId, type, payload, to)      → void     // offer | answer | ice | reset | state; `to` a user id, or null for every other participant
 poll({ after, call, tab, hold, kind }) → { call, incoming, signals, cursor }   // kind: only calls of that kind
 leave(callId, tab)                   → void     // optional, a beacon as the page unloads
+configuration()                      → { iceServers, iceTransportPolicy }   // optional, ICE servers asked per call
 ```
 
 A failed request rejects with an `Error` carrying `status` and, from Calls for Laravel, `reason` (`busy`, `not_ringing`, `not_allowed`, `full`, `ended`, `too_large`): the two 409s (busy, no longer ringing) are told apart by it.
@@ -177,11 +201,22 @@ A `call` is `{ id, kind, status: 'ringing' | 'active' | 'ended', end_reason, rol
 
 A signal is `{ id, call, type, payload, from }`, `from` being the sender's user id. An `answer` payload names the `offer` it answers (the offerer's session), so an answer to an offer from before the offerer's page reloaded is ignored.
 
-**A 1-on-1 backend** sends neither `peers`, `seat`, `joined` nor `from`, and ignores `to`: the client derives them (the caller has seat 0, the callee seat 1, the one peer is the sender), so [Calls for Laravel](https://github.com/packstub/calls) works unchanged until it learns groups. `invite` and the route for it are optional; without them `canInvite()` is false.
+**A 1-on-1 backend** sends neither `peers`, `seat`, `joined` nor `from`, and ignores `to`: the client derives them (the caller has seat 0, the callee seat 1, the one peer is the sender), so a backend without groups works unchanged. `invite` and the route for it are optional; without them `canInvite()` is false.
 
 `poll` is the one request every window repeats: with `hold` set it claims this user's side of the named call for `tab` (and is its heartbeat), and only the window that holds the side receives the signals. The server marks a side whose window stopped polling as free after a few seconds, so a reloaded page can take it. A call ends on the server once fewer than two people are left in it; someone who hangs up on a group leaves it for the others.
 
-`HttpSignaling` maps these onto the routes above; `__ID__` in a route is replaced with the call id. Its `kind` option adds `kind=` to every poll, and `timeout` (10 s) gives up a request that hangs, so one stalled poll or signal cannot stop the rest. `start` posts `{ callee, tab }` for one person and `{ callees, tab }` for a group; `send` adds `to` when set; `invite` posts `{ callee }`. [Calls for Laravel](https://github.com/packstub/calls) implements the server side; the README there documents the endpoints for other backends.
+`HttpSignaling` maps these onto the routes above; `__ID__` in a route is replaced with the call id. Its options:
+
+| Option | Default | What |
+| --- | --- | --- |
+| `routes` | required | `poll`, `store`, `answer`, `decline`, `hangup`, `signal`, and optionally `leave`, `invite` and `ice` (without `invite` or `ice` the matching method is left out) |
+| `headers` | `{}` | sent with every request, e.g. `{ 'X-CSRF-TOKEN': token }` |
+| `beaconFields` | `{}` | form fields sent with the `leave` beacon, e.g. `{ _token: token }` |
+| `kind` | `null` | adds `kind=` to every poll, so only calls of that kind come back |
+| `timeout` | `10000` | milliseconds before a request is given up, so one stalled poll or signal cannot stop the rest |
+| `fetch` | `globalThis.fetch` | your own fetch |
+
+`start` posts `{ callee, tab }` for one person and `{ callees, tab }` for a group; `send` adds `to` when set; `invite` posts `{ callee }`. [Calls for Laravel](https://github.com/packstub/calls) implements the server side; the README there documents the endpoints for other backends.
 
 ## The widget
 
@@ -199,13 +234,32 @@ const widget = new CallWidget({
 })
 ```
 
-Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on); `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script. Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
+| Option | Default | What |
+| --- | --- | --- |
+| `routes`, `csrf` | | an `HttpSignaling` is made from these (CSRF as `X-CSRF-TOKEN` and with the `leave` beacon) |
+| `signaling` / `client` | | your own signaling adapter, or a `CallClient` of your own (the widget then leaves it running on `destroy()`) |
+| `iceServers` | the `ice` route | fixed servers; without them the widget asks the `ice` route each time a call starts |
+| `video`, `poll`, `reconnectTimeout`, `maxParticipants`, `iceTransportPolicy` | as `CallClient` | passed on to the client |
+| `kind` | `'call'` | the kind of calls this widget draws |
+| `root` | `document.body` | where the widget mounts |
+| `windowUrl` | `null` | the pop-out page, with `__ID__` for a call and `__USER__` for someone to ring; set it and calls open in a window of their own |
+| `popOut` | `true` when `windowUrl` is set | use the pop-out |
+| `inPopOut` | `false` | this page is the pop-out |
+| `openedFor` | read from the URL | what the pop-out does on load, `{ call }` or `{ callee }` |
+| `windowFeatures` | `'popup=yes,width=460,height=620'` | `window.open` features for the pop-out |
+| `callSelector` | `'[data-calls-call]'` | elements that ring someone on click (`null`: none) |
+| `labels`, `templates`, `icons` | the exported `labels`, `templates`, `icons` | override any of them |
+| `startPolling` | `true` | start at once; `false` to change things first and call `start()` yourself |
+
+Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `calls:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script. Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
 
 Three ways to make it yours:
 
 - **CSS.** Every class is `calls-*`; the colours and sizes are custom properties on `.calls` (`--calls-bg`, `--calls-fg`, `--calls-dim`, `--calls-accent`, `--calls-danger`, `--calls-success`, `--calls-stage`, `--calls-radius`, `--calls-width`, `--calls-z`, `--calls-font`). Skip `widget.css` and write your own against the class names when that is not enough.
 - **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-calls-text="key"`, `data-calls-show="key"` (or `"!key"`), `data-calls-class="name:key …"`, `data-calls-attr="name:key …"`, `data-calls-src="key"`, `data-calls-video="key"` (a MediaStream) and `data-calls-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|focusWindow"`. The root of a template carries `data-calls-scope`; the window's needs `data-calls-ref="grid"` for the tiles and `data-calls-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `startPolling: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `role`).
 - **Subclass.** `model()`, `tileModel()`, `render()`, `renderTiles()`, `placeStrip()` and the actions are methods on `CallWidget`.
+
+The module also exports `labels`, `templates` and `icons` (the defaults), `patch(root, model)` (applies the hooks to a piece of markup), `attachStream(video, stream)` and `fill(label, values)` (fills in `:name` and the like), for templates and subclasses of your own.
 
 `CallClient` methods not documented here (`tick`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
 

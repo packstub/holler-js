@@ -160,7 +160,7 @@ new CallClient({
 })
 ```
 
-The interface (`connect`, `disconnect`, `signal`, `connected` and `leave` are required, the rest optional):
+The interface (`attach`, `connect`, `disconnect`, `signal`, `connected` and `leave` are required, the rest optional):
 
 ```ts
 attach(client)                        // once per call, before anything else

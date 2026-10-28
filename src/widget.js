@@ -267,9 +267,10 @@ function ringer() {
 }
 
 /** The pop-out by its name: `{ window, blank }`, blank when the lookup itself opened an empty one; null when blocked or not ours. */
-function findWindow() {
+function findWindow(features) {
     try {
-        const found = window.open('', 'packstub-calls')
+        // The features shape only a window this opens; an existing pop-out keeps its own.
+        const found = window.open('', 'packstub-calls', features)
         if (! found) return null
         if (found.location.href === 'about:blank') return { window: found, blank: true }
         return found.location.origin === location.origin ? { window: found, blank: false } : null
@@ -691,7 +692,7 @@ export class CallWidget extends EventTarget {
         // A closed handle: the window is gone, open it again. No handle (this page reloaded): the
         // pop-out may still be open, so look it up by name; opening it would reload it mid-call.
         // The lookup opens a blank window when there is none, which then takes the pop-out page.
-        const found = this.popupWindow ? null : findWindow()
+        const found = this.popupWindow ? null : findWindow(this.windowFeatures)
         if (found && ! found.blank) {
             this.popupWindow = found.window
             found.window.focus()

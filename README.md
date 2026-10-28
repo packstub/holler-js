@@ -78,7 +78,7 @@ channel.send(JSON.stringify(message))
 await client.startMedia('audio')
 ```
 
-The side that offers (the lower seat) opens each channel and the other receives it; both get `datachannel`. After either side reloads, the new connection opens them again. `client.channel(label, peerId)` returns the open one.
+Both sides make each channel with an id agreed in advance (its place in `channels`), so they pair up whichever side offers; both get `datachannel` once it is open. `media: 'none'` needs at least one channel. After either side reloads, the new connection opens them again. `client.channel(label, peerId)` returns the open one.
 
 A 1-on-1 call needs none of the group pieces: `remoteVideo.srcObject = stream` on `remotestream` and `client.peer` for the one other person still work.
 
@@ -112,7 +112,7 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | Option | Default | What |
 | --- | --- | --- |
 | `signaling` | required | an object with the signaling interface below |
-| `iceServers` | `[]` | passed to `RTCPeerConnection` as is; or a function asked each time a call starts, or `'signaling'` to ask the signaling's `configuration()` (route `ice` on `HttpSignaling`), so short-lived TURN credentials are fresh per call |
+| `iceServers` | `[]` | passed to `RTCPeerConnection` as is; or a function asked each time a call starts, e.g. `() => signaling.configuration().then((rtc) => rtc.iceServers)` (route `ice` on `HttpSignaling`), so short-lived TURN credentials are fresh per call |
 | `video` | `true` | start calls with the camera on (falls back to voice when there is none) |
 | `poll` | `{ idle: 5000, active: 1000, hidden: 15000 }` | milliseconds between polls: idle, during a call, and idle in a hidden tab (it polls at once when shown again) |
 | `media` | `'video'` (`'audio'` with `video: false`) | what a call starts with; `'none'` asks for no camera or microphone and connects over data channels only, until `startMedia()` |

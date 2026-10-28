@@ -266,6 +266,34 @@ function ringer() {
     }
 }
 
+/** The pop-out by its name, when it is open and showing a page of ours; null otherwise (a blank window opened by the lookup is closed again). */
+function findOpenWindow() {
+    try {
+        const found = window.open('', 'packstub-calls')
+        if (! found) return null
+        if (found.location.href === 'about:blank') {
+            found.close()
+            return null
+        }
+        return found.location.origin === location.origin ? found : null
+    } catch {
+        return null
+    }
+}
+
+/** Tokens nobody used (the window was blocked or closed before it read one): gone after their minute. */
+function sweepTokens() {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i)
+        if (! key?.startsWith(OPEN_TOKEN_KEY)) continue
+        try {
+            if (Date.now() - JSON.parse(localStorage.getItem(key)).at > OPEN_TOKEN_TTL) localStorage.removeItem(key)
+        } catch {
+            localStorage.removeItem(key)
+        }
+    }
+}
+
 /** `:name` and the like in a label, taken literally (a `$` in someone's name stays a `$`). */
 export function fill(label, values) {
     return Object.entries(values).reduce((text, [key, value]) => text.replace(`:${key}`, () => String(value)), String(label))
@@ -278,7 +306,7 @@ export class CallWidget extends EventTarget {
      * @param {object} [options.signaling]  a signaling adapter; otherwise an HttpSignaling from `routes` and `csrf`
      * @param {object} [options.routes]  the HttpSignaling routes (`__ID__` where the call id goes)
      * @param {string} [options.csrf]  the CSRF token, sent as `X-CSRF-TOKEN` and with the leave beacon
-     * @param {RTCIceServer[]} [options.iceServers]
+     * @param {RTCIceServer[]} [options.iceServers]  fixed servers; without them the widget asks the `ice` route each time a call starts, when there is one
      * @param {boolean} [options.video]  calls start with the camera on
      * @param {{ idle: number, active: number }} [options.poll]  milliseconds between polls
      * @param {number} [options.reconnectTimeout]  milliseconds before a quiet call is dropped
@@ -300,7 +328,7 @@ export class CallWidget extends EventTarget {
     constructor(options = {}) {
         super()
         const {
-            client = null, signaling = null, routes = null, csrf = null, iceServers = [], video = true, poll, reconnectTimeout, maxParticipants,
+            client = null, signaling = null, routes = null, csrf = null, iceServers = null, video = true, poll, reconnectTimeout, maxParticipants,
             root = document.body, windowUrl = null, inPopOut = false, popOut = windowUrl !== null, openedFor = null,
             windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-calls-call]', startPolling = true,
             kind = 'call', iceTransportPolicy = 'all',
@@ -318,14 +346,17 @@ export class CallWidget extends EventTarget {
 
         // A client of our own is ours to take down in destroy(); one passed in belongs to the page.
         this.ownsClient = ! client
-        this.client = client ?? new CallClient({
-            signaling: signaling ?? new HttpSignaling({
+        const adapter = signaling ?? new HttpSignaling({
                 routes,
                 headers: csrf ? { 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest' } : { 'X-Requested-With': 'XMLHttpRequest' },
                 beaconFields: csrf ? { _token: csrf } : {},
                 kind,
-            }),
-            iceServers, iceTransportPolicy, video, poll, reconnectTimeout, maxParticipants,
+            })
+        this.client = client ?? new CallClient({
+            signaling: adapter,
+            // Fresh servers (and short-lived TURN credentials) for every call when the backend hands them out.
+            iceServers: iceServers ?? (adapter.configuration ? () => adapter.configuration().then((rtc) => rtc.iceServers) : []),
+            iceTransportPolicy, video, poll, reconnectTimeout, maxParticipants,
             // A page that leaves calls to the pop-out never takes one over itself.
             resumes: ! this.popOut,
         })
@@ -629,15 +660,20 @@ export class CallWidget extends EventTarget {
         if (! this.windowUrl) return false
 
         const token = Math.random().toString(36).slice(2) + Date.now().toString(36)
+        const key = `${OPEN_TOKEN_KEY}${token}`
         let url = this.urlFor(params)
         try {
-            localStorage.setItem(`${OPEN_TOKEN_KEY}${token}`, JSON.stringify({ call: params.call ?? null, callee: params.callee ?? null, at: Date.now() }))
+            sweepTokens()
+            localStorage.setItem(key, JSON.stringify({ call: params.call ?? null, callee: params.callee ?? null, at: Date.now() }))
             url += `${url.includes('?') ? '&' : '?'}open=${token}`
         } catch {
             // No storage: the pop-out shows the call and waits for a click.
         }
 
         this.popupWindow = window.open(url, 'packstub-calls', this.windowFeatures)
+        if (! this.popupWindow) {
+            try { localStorage.removeItem(key) } catch {}
+        }
         this.popupWindow?.focus()
 
         return this.popupWindow !== null
@@ -645,6 +681,10 @@ export class CallWidget extends EventTarget {
 
     /** Bring the pop-out back; open it again if it was closed, or continue the call here when that is blocked. */
     focusWindow() {
+        // After this page reloaded it lost the handle: find the open pop-out by name before opening
+        // a new one, which would load it again in the middle of the call.
+        if (! this.popupWindow || this.popupWindow.closed) this.popupWindow = findOpenWindow()
+
         if (this.popupWindow && ! this.popupWindow.closed) this.popupWindow.focus()
         else if (this.call && ! this.openWindow({ call: this.call.id })) this.takeBack()
     }

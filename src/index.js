@@ -254,14 +254,11 @@ class Link {
 
         this.addTracks(client.localSource())
 
-        // The data channels: opened by the side that offers, so on a call without media the
-        // channel itself starts the negotiation; the other side receives them.
-        if (! polite) {
-            for (const label of client.channelLabels) this.adopt(pc.createDataChannel(label, { ordered: true }))
-        }
-
-        pc.addEventListener('datachannel', ({ channel }) => {
-            if (! this.closed) this.adopt(channel)
+        // The data channels, made on both sides with an id agreed in advance (the order of
+        // `channels`), so they pair up whichever side offers, also after both pages reloaded.
+        // On a call without media the offering side's channels start the negotiation.
+        client.channelLabels.forEach((label, id) => {
+            this.adopt(pc.createDataChannel(label, { ordered: true, negotiated: true, id }))
         })
 
         pc.addEventListener('track', ({ track }) => {
@@ -311,9 +308,12 @@ class Link {
 
         source?.getTracks().forEach((track) => {
             if (sent.has(track)) return
-            const spent = senders.find((sender) => sender.track?.kind === track.kind && sender.track.readyState === 'ended')
+            // A sender whose track was stopped, or the empty video sender a screen share left behind.
+            const spent = senders.find((sender) => (sender.track?.kind === track.kind && sender.track.readyState === 'ended')
+                || (track.kind === 'video' && sender.track === null && sender.__video))
             if (spent) {
-                spent.replaceTrack(track)
+                sent.add(track)
+                spent.replaceTrack(track).catch((error) => this.mesh.client.emit('error', { error }))
                 return
             }
             const sender = this.pc.addTrack(track, source)
@@ -526,7 +526,7 @@ export class CallClient extends EventTarget {
     /**
      * @param {object} options
      * @param {HttpSignaling} options.signaling
-     * @param {RTCIceServer[]|(() => Promise<RTCIceServer[]>|RTCIceServer[])} [options.iceServers]  or a function asked each time a call starts (short-lived TURN credentials); `'signaling'` asks the signaling's `configuration()`
+     * @param {RTCIceServer[]|(() => Promise<RTCIceServer[]>|RTCIceServer[])} [options.iceServers]  or a function asked each time a call starts (short-lived TURN credentials), e.g. `() => signaling.configuration().then((c) => c.iceServers)`
      * @param {boolean} [options.video]  start calls with the camera on
      * @param {{ idle: number, active: number }} [options.poll]  milliseconds between polls
      * @param {number} [options.reconnectTimeout]  milliseconds to wait for the other side before giving up
@@ -547,6 +547,8 @@ export class CallClient extends EventTarget {
         this.video = video
         this.media = media ?? (video ? 'video' : 'audio')
         this.channelLabels = [...channels]
+        // Without a track or a channel nothing would ever start the connection.
+        if (this.media === 'none' && ! this.channelLabels.length) throw new Error("media: 'none' needs at least one data channel in `channels`.")
         // `hidden`: how often a hidden tab with no call asks for incoming calls.
         this.pollIntervals = { idle: 5000, active: 1000, hidden: 15000, ...poll }
         this.reconnectTimeout = reconnectTimeout
@@ -585,7 +587,8 @@ export class CallClient extends EventTarget {
         this.epoch = 0
         // Set while this window is about to run a call (answering, resuming): its polls hold the side.
         this.joining = false
-        this.pending = null
+        this.placing = null
+        this.answering = null
         this.mediaRequest = null
         this.onVisibility = () => { if (! globalThis.document?.hidden) this.schedule(0) }
     }
@@ -674,8 +677,10 @@ export class CallClient extends EventTarget {
     schedule(delay) {
         clearTimeout(this.timer)
         if (! this.polling) return
-        const hidden = this.state === 'idle' && globalThis.document?.hidden === true
-        const interval = delay ?? (hidden ? this.pollIntervals.hidden : ['idle', 'elsewhere'].includes(this.state) ? this.pollIntervals.idle : this.pollIntervals.active)
+        // A window about to run a call (answering, resuming) polls fast: those polls hold its side.
+        const busy = this.joining || this.joined || (this.call && this.state !== 'elsewhere')
+        const hidden = ! busy && this.state === 'idle' && ! this.call && globalThis.document?.hidden === true
+        const interval = delay ?? (hidden ? this.pollIntervals.hidden : busy ? this.pollIntervals.active : this.pollIntervals.idle)
         this.timer = setTimeout(() => this.tick(), interval)
     }
 
@@ -771,9 +776,9 @@ export class CallClient extends EventTarget {
     /** Ring a user, or a group of them (an array). Resolves once the call is ringing on the server. */
     callUser(users) {
         // A second click while the first call is being set up gets the same call.
-        this.pending ??= this.placeCall(users).finally(() => { this.pending = null })
+        this.placing ??= this.placeCall(users).finally(() => { this.placing = null })
 
-        return this.pending
+        return this.placing
     }
 
     async placeCall(users) {
@@ -794,6 +799,13 @@ export class CallClient extends EventTarget {
 
         await this.loadIceServers()
 
+        // While the prompt was open, a call rang here (and may be being answered), or the window
+        // let go of everything: ring nobody, and close the camera unless the answer uses it.
+        if (epoch !== this.epoch || this.state !== 'idle') {
+            if (! this.joined && ! this.answering) this.releaseMedia()
+            throw new Error('The call was given up.')
+        }
+
         let call
         try {
             call = await this.signaling.start(users, this.tab)
@@ -805,9 +817,10 @@ export class CallClient extends EventTarget {
             throw error
         }
 
-        if (epoch !== this.epoch) {
-            // Something else took this window meanwhile (an incoming call was answered): give the new call up.
+        if (epoch !== this.epoch || this.state !== 'idle') {
+            // Something else took this window meanwhile (an incoming call is ringing or was answered): give the new call up.
             this.signaling.hangup(call.id).catch(() => {})
+            if (! this.joined && ! this.answering) this.releaseMedia()
             throw new Error('The call was given up.')
         }
 
@@ -821,9 +834,9 @@ export class CallClient extends EventTarget {
     /** Accept the call that is ringing. */
     accept() {
         // A double click on Accept answers once.
-        this.pending ??= this.answerCall().finally(() => { this.pending = null })
+        this.answering ??= this.answerCall().finally(() => { this.answering = null })
 
-        return this.pending
+        return this.answering
     }
 
     async answerCall() {
@@ -966,7 +979,11 @@ export class CallClient extends EventTarget {
         }
 
         await this.loadIceServers()
-        if (epoch !== this.epoch || this.call?.id !== call.id) return
+        // The call ended, or another window of mine took it, while the prompt was open.
+        if (epoch !== this.epoch || this.call?.id !== call.id || this.call?.held) {
+            if (! this.joined) this.releaseMedia()
+            return
+        }
 
         this.setState(call.status === 'ringing' ? 'calling' : 'connecting')
         this.join(call, { fresh: true })
@@ -1291,20 +1308,14 @@ export class CallClient extends EventTarget {
 
     // ---- internals -----------------------------------------------------------
 
-    /** The ICE servers for the call about to start, when they come from a function or the server; the last ones stay on failure. */
+    /** The ICE servers for the call about to start, when they come from a function; the last ones stay on failure. */
     async loadIceServers() {
         const option = this.iceServersOption
         if (Array.isArray(option) || ! option) return
 
         try {
-            if (option === 'signaling') {
-                const configuration = await this.signaling.configuration?.()
-                if (Array.isArray(configuration?.iceServers)) this.iceServers = configuration.iceServers
-                if (configuration?.iceTransportPolicy) this.iceTransportPolicy = configuration.iceTransportPolicy === 'relay' ? 'relay' : 'all'
-            } else if (typeof option === 'function') {
-                const servers = await option()
-                if (Array.isArray(servers)) this.iceServers = servers
-            }
+            const servers = typeof option === 'function' ? await option() : null
+            if (Array.isArray(servers)) this.iceServers = servers
         } catch (error) {
             this.emit('error', { error })
         }

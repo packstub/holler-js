@@ -44,15 +44,16 @@ describe('a call without media', () => {
         const { agent, guest } = await assist()
 
         expect(devices.getUserMedia).not.toHaveBeenCalled()
-        // The caller (the lower seat) offers, so it opens the channel; the offer goes out without any track.
+        // Both sides make the channel with the same id; the offer goes out without any track.
         const channel = agent.link.channels.get('assist')
         expect(channel).toBeInstanceOf(FakeDataChannel)
-        expect(channel.options).toEqual({ ordered: true })
+        expect(channel.options).toEqual({ ordered: true, negotiated: true, id: 0 })
+        expect(guest.link.channels.get('assist').options).toEqual({ ordered: true, negotiated: true, id: 0 })
         expect(agent.pc.senders).toHaveLength(0)
         expect(guest.link.settled).toBe(true)
 
         channel.open()
-        guest.pc.receiveChannel('assist')
+        guest.link.channels.get('assist').open()
 
         expect(agent.channelsOpened.map((opened) => [opened.label, opened.peer.id])).toEqual([['assist', 'guest:1']])
         expect(guest.channelsOpened.map((opened) => [opened.label, opened.peer.id])).toEqual([['assist', 'agent']])
@@ -93,8 +94,8 @@ describe('a call without media', () => {
         await settle(400)
 
         expect(before.readyState).toBe('closed')
-        // The fresh page offers now, so it opens the channel.
-        expect(again.link.channels.get('assist')).toBeInstanceOf(FakeDataChannel)
+        // The fresh connection has the channel again, with the same id.
+        expect(again.link.channels.get('assist').options.id).toBe(0)
         expect(again.link.polite).toBe(false)
     })
 
@@ -102,6 +103,12 @@ describe('a call without media', () => {
         const { agent } = await assist({ iceTransportPolicy: 'relay' })
 
         expect(agent.pc.configuration.iceTransportPolicy).toBe('relay')
+    })
+})
+
+describe('options', () => {
+    it("refuses media: 'none' without a channel: nothing would start the connection", () => {
+        expect(() => new CallClient({ signaling: server.clientFor('agent'), media: 'none' })).toThrow(/data channel/)
     })
 })
 
@@ -142,8 +149,8 @@ describe('drain', () => {
 describe('ICE servers per call', () => {
     it('asks the signaling when a call starts, and a function each time', async () => {
         let n = 0
-        const signaling = { ...server.clientFor('agent'), configuration: vi.fn(async () => ({ iceServers: [{ urls: `turn:t${++n}` }], iceTransportPolicy: 'relay' })) }
-        const caller = new CallClient({ signaling, iceServers: 'signaling', poll: { idle: 100, active: 50 } })
+        const configuration = vi.fn(async () => ({ iceServers: [{ urls: `turn:t${++n}` }] }))
+        const caller = new CallClient({ signaling: server.clientFor('agent'), iceServers: () => configuration().then((rtc) => rtc.iceServers), iceTransportPolicy: 'relay', poll: { idle: 100, active: 50 } })
         caller.start()
         await caller.callUser('guest:1')
 

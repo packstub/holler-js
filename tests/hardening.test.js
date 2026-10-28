@@ -245,3 +245,92 @@ describe('HttpSignaling', () => {
         expect(fetch.mock.calls[1][0]).toBe('/poll?after=3&kind=call')
     })
 })
+
+describe('review fixes', () => {
+    const prompt = () => {
+        let allow
+        devices.getUserMedia.mockImplementationOnce(() => new Promise((resolve) => { allow = resolve }))
+        return async () => {
+            const { FakeMediaStream, FakeTrack } = await import('./fakes.js')
+            const stream = new FakeMediaStream([new FakeTrack('audio')])
+            allow(stream)
+            return stream
+        }
+    }
+
+    it('answers a call that rang while placing one, and rings nobody', async () => {
+        const ana = client('ana')
+        ana.start()
+        const allow = prompt()
+        const placing = ana.callUser('mihai').catch((error) => error)
+        await settle(10)
+
+        await server.clientFor('ion').start('ana', 'ion-tab')
+        await settle(150)
+        expect(ana.state).toBe('ringing')
+
+        const answering = ana.accept()
+        const stream = await allow()
+        await answering
+        expect(await placing).toBeInstanceOf(Error)
+
+        expect(server.log.filter(([user, action]) => user === 'ana' && action === 'start')).toHaveLength(0)
+        expect(server.log.filter(([user, action]) => user === 'ana' && action === 'answer')).toHaveLength(1)
+        expect(stream.getTracks()[0].readyState).toBe('live')
+    })
+
+    it('closes the camera and rings nobody when the window is destroyed during the prompt', async () => {
+        const ion = client('ion')
+        ion.start()
+        const allow = prompt()
+        const placing = ion.callUser('ana').catch((error) => error)
+        await settle(10)
+
+        ion.destroy()
+        const stream = await allow()
+        expect(await placing).toBeInstanceOf(Error)
+
+        expect(stream.getTracks()[0].readyState).toBe('ended')
+        expect(server.log.some(([user, action]) => user === 'ion' && action === 'start')).toBe(false)
+    })
+
+    it('polls fast while resuming, even hidden: those polls hold the side', async () => {
+        const ion = client('ion')
+        const ana = client('ana')
+        ion.start()
+        ana.start()
+        await ion.callUser('ana')
+        await settle()
+        await ana.accept()
+        await settle()
+        ana.destroy()
+        server.tick(10)
+
+        vi.stubGlobal('document', Object.assign(new EventTarget(), { hidden: true }))
+        prompt()
+        const again = client('ana', { poll: { idle: 100, active: 50, hidden: 5000 } })
+        again.start()
+        await settle(400)
+
+        expect(again.joining).toBe(true)
+        expect(server.log.filter(([user, action, , , hold]) => user === 'ana' && action === 'poll' && hold).length).toBeGreaterThan(4)
+    })
+
+    it('puts the camera on the empty video sender a screen share left behind', async () => {
+        const ion = client('ion', { video: false })
+        const ana = client('ana', { video: false })
+        ion.start()
+        ana.start()
+        await ion.callUser('ana')
+        await settle()
+        await ana.accept()
+        await settle()
+
+        await ion.shareScreen()
+        await ion.stopSharing()
+        await ion.startMedia('video')
+
+        expect(ion.pc.senders.filter((sender) => sender.__video)).toHaveLength(1)
+        expect(ion.pc.senders.find((sender) => sender.__video).track.kind).toBe('video')
+    })
+})

@@ -353,6 +353,15 @@ describe('the widget', () => {
         expect(visible(answering, 'incoming')).not.toBeNull()
     })
 
+    it('leaves no token behind when the browser blocks the pop-out', async () => {
+        vi.stubGlobal('open', vi.fn(() => null))
+        const ion = widget('ion', { windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
+
+        ion.callUser('ana')
+
+        expect(Object.keys(localStorage).filter((key) => key.startsWith('packstub-calls:open:'))).toEqual([])
+    })
+
     it('destroys cleanly: the element goes, polling stops', async () => {
         const ion = widget('ion')
         await settle()

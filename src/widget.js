@@ -33,6 +33,10 @@ const ACTIVE_STATES = ['calling', 'connecting', 'active', 'reconnecting']
 // A pop-out that stopped holding the call for this long is gone, not reloading: the main page takes the call back.
 const TAKE_BACK_DELAY = 3000
 
+// The one-time tokens a page leaves for the pop-out it opens, and how long one is good for.
+const OPEN_TOKEN_KEY = 'packstub-calls:open:'
+const OPEN_TOKEN_TTL = 60000
+
 const svg = (paths) => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="calls-icon">${paths}</svg>`
 
 /** Heroicons (MIT), outline, the few the widget needs. */
@@ -254,7 +258,17 @@ function ringer() {
             clearInterval(timer)
             timer = null
         },
+        close() {
+            this.stop()
+            context?.close?.().catch?.(() => {})
+            context = null
+        },
     }
+}
+
+/** `:name` and the like in a label, taken literally (a `$` in someone's name stays a `$`). */
+export function fill(label, values) {
+    return Object.entries(values).reduce((text, [key, value]) => text.replace(`:${key}`, () => String(value)), String(label))
 }
 
 export class CallWidget extends EventTarget {
@@ -272,40 +286,46 @@ export class CallWidget extends EventTarget {
      * @param {Element} [options.root]  where the widget mounts (document.body)
      * @param {string} [options.windowUrl]  the pop-out page, with `__ID__` for a call and `__USER__` for someone to ring; set it and calls open in a window of their own
      * @param {boolean} [options.popOut]  use the pop-out (true when `windowUrl` is set)
-     * @param {boolean} [options.popup]  this page IS the pop-out: the widget fills it and reads `?call=` / `?callee=` from the URL
-     * @param {{ call?: string|number, callee?: string }} [options.autoStart]  what the pop-out does on load (read from the URL by default)
+     * @param {boolean} [options.inPopOut]  this page IS the pop-out: the widget fills it and does what the page that opened it asked (`?call=` / `?callee=` with a one-time `open` token; a link without one only shows the call)
+     * @param {{ call?: string|number, callee?: string }} [options.openedFor]  what the pop-out does on load (read from the URL and checked against the token by default)
      * @param {string} [options.windowFeatures]  window.open features for the pop-out
      * @param {string|null} [options.callSelector]  elements that ring someone on click; the user id is in `data-calls-call` (null: none)
      * @param {object} [options.labels]  texts to override
      * @param {object} [options.templates]  views to override: incoming, chip, window, tile, notice
      * @param {object} [options.icons]  SVG strings to override
-     * @param {boolean} [options.autostart]  start polling at once (true)
+     * @param {boolean} [options.startPolling]  start polling at once (true)
+     * @param {string} [options.kind]  the kind of calls this widget draws (`call`); other packages' calls never reach it
+     * @param {'all'|'relay'} [options.iceTransportPolicy]
      */
     constructor(options = {}) {
         super()
         const {
             client = null, signaling = null, routes = null, csrf = null, iceServers = [], video = true, poll, reconnectTimeout, maxParticipants,
-            root = document.body, windowUrl = null, popup = false, popOut = windowUrl !== null, autoStart = null,
-            windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-calls-call]', autostart = true,
+            root = document.body, windowUrl = null, inPopOut = false, popOut = windowUrl !== null, openedFor = null,
+            windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-calls-call]', startPolling = true,
+            kind = 'call', iceTransportPolicy = 'all',
         } = options
 
         this.labels = { ...labels, ...(options.labels ?? {}) }
         this.templates = { ...templates, ...(options.templates ?? {}) }
         this.icons = { ...icons, ...(options.icons ?? {}) }
-        this.popup = Boolean(popup)
-        this.popOut = Boolean(popOut) && ! this.popup
+        this.inPopOut = Boolean(inPopOut)
+        this.popOut = Boolean(popOut) && ! this.inPopOut
         this.windowUrl = windowUrl
         this.windowFeatures = windowFeatures
         this.callSelector = callSelector
-        this.autoStart = autoStart ?? (this.popup ? this.readAutoStart() : null)
+        this.openedFor = openedFor ?? (this.inPopOut ? this.readOpenedFor() : null)
 
+        // A client of our own is ours to take down in destroy(); one passed in belongs to the page.
+        this.ownsClient = ! client
         this.client = client ?? new CallClient({
             signaling: signaling ?? new HttpSignaling({
                 routes,
                 headers: csrf ? { 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest' } : { 'X-Requested-With': 'XMLHttpRequest' },
                 beaconFields: csrf ? { _token: csrf } : {},
+                kind,
             }),
-            iceServers, video, poll, reconnectTimeout, maxParticipants,
+            iceServers, iceTransportPolicy, video, poll, reconnectTimeout, maxParticipants,
             // A page that leaves calls to the pop-out never takes one over itself.
             resumes: ! this.popOut,
         })
@@ -328,17 +348,20 @@ export class CallWidget extends EventTarget {
         this.resizeObserver = null
         this.ring = ringer()
         this.listeners = []
+        this.clockSince = null
+        this.closeTimer = null
+        this.sharingPeers = new Map()
 
         this.mount(root)
         this.listen()
-        if (autostart) this.start()
+        if (startPolling) this.start()
     }
 
     // ---- lifecycle -----------------------------------------------------------
 
     mount(root) {
         this.el = document.createElement('div')
-        this.el.className = this.popup ? 'calls calls-popup' : 'calls'
+        this.el.className = this.inPopOut ? 'calls calls-popup' : 'calls'
         this.slots = {}
         for (const name of ['incoming', 'chip', 'window', 'notice']) {
             const slot = document.createElement('div')
@@ -358,16 +381,21 @@ export class CallWidget extends EventTarget {
     start() {
         const client = this.client
 
-        if (this.popup && this.autoStart?.callee) {
+        const opened = this.openedFor
+
+        if (this.inPopOut && opened?.callee && opened.trusted) {
             client.start()
-            client.callUser(String(this.autoStart.callee)).catch(() => {})
-        } else if (this.popup && this.autoStart?.call) {
-            client.resumeCall(this.autoStart.call, { answer: true })
+            client.callUser(String(opened.callee)).catch(() => {})
+        } else if (this.inPopOut && opened?.call) {
+            // Answered only when the page that opened this window asked; a link alone continues
+            // a call I am already in, or shows the one ringing me, with Accept.
+            client.resumeCall(opened.call, { answer: Boolean(opened.trusted) })
         } else {
             client.start()
         }
     }
 
+    /** Take the widget down; a client it made itself lets go of the call and closes the camera too. */
     destroy() {
         for (const [target, type, handler] of this.listeners) target.removeEventListener(type, handler)
         this.listeners = []
@@ -375,8 +403,10 @@ export class CallWidget extends EventTarget {
         this.stopClock()
         clearTimeout(this.takeBackTimer)
         clearTimeout(this.noticeTimer)
-        this.ring.stop()
-        this.client.stop()
+        clearTimeout(this.closeTimer)
+        this.ring.close()
+        if (this.ownsClient) this.client.destroy()
+        else this.client.stop()
         this.el.remove()
     }
 
@@ -398,37 +428,57 @@ export class CallWidget extends EventTarget {
             if (state === 'ringing') this.ring.play('ring')
             if (state === 'calling') this.ring.play('ringback')
 
-            if (state === 'active' || state === 'elsewhere') this.startClock()
+            if (state === 'active' || (state === 'elsewhere' && client.call?.status === 'active')) this.startClock()
             else if (! ['reconnecting', 'connecting'].includes(state)) this.stopClock()
 
             this.render()
         })
         this.on(client, 'incoming', ({ detail: { call } }) => { this.call = call; this.render() })
-        this.on(client, 'update', ({ detail: { call } }) => { this.call = call; this.syncUrl(); this.watchWindow(); this.render() })
+        this.on(client, 'update', ({ detail: { call } }) => {
+            this.call = call
+            // The chip's clock counts from the answer, not from the ringing.
+            if (this.state === 'elsewhere' && call.status === 'active' && (! this.clock || (call.answered_at && this.clockSince === null))) {
+                this.stopClock()
+                this.startClock()
+            }
+            this.syncUrl()
+            this.watchWindow()
+            this.render()
+        })
         this.on(client, 'localstream', () => this.render())
         this.on(client, 'peers', () => this.render())
         this.on(client, 'remotestream', () => this.render())
         this.on(client, 'peerstate', ({ detail: { peer, sharing } }) => {
             this.render()
+            // Only when a screen starts or stops: a mute is a peerstate too.
+            if ((this.sharingPeers.get(peer.id) ?? false) === sharing) return
+            this.sharingPeers.set(peer.id, sharing)
             this.emit('sharing', { peer, sharing, spotlight: this.spotlight })
         })
         this.on(client, 'peerleft', ({ detail: { peer, reason } }) => {
+            this.sharingPeers.delete(peer.id)
             const label = this.labels[`peer_${reason}`]
-            if (label && client.peers.length > 0) this.show(label.replace(':name', peer.name))
+            if (label && client.peers.length > 0) this.show(fill(label, { name: peer.name }))
         })
         this.on(client, 'ended', ({ detail: { reason } }) => {
             this.sharing = false
             clearTimeout(this.takeBackTimer)
             this.takeBackTimer = null
+            this.sharingPeers.clear()
             this.show(this.labels[`ended_${reason}`] || this.labels.ended_hung_up)
             this.render()
-            if (this.popup) setTimeout(() => window.close(), 1500)
+            if (this.inPopOut) this.closeTimer = setTimeout(() => window.close(), 1500)
         })
         this.on(client, 'error', ({ detail: { error, media } }) => {
+            // Signed out, or the session expired: nothing to say every few seconds, just stop.
+            if (error?.status === 401 || error?.status === 419) {
+                client.stop()
+                return
+            }
             console.warn('[calls]', error)
             if (media) this.show(this.labels.no_media)
-            else if (error?.status === 409) this.show(this.labels.ended_busy)
-            else if (error?.status && error.status !== 404) this.show(error.message)
+            // The server's own words for a refusal it explains (not allowed, full); nothing raw from a crash.
+            else if (error?.reason && error.status >= 400 && error.status < 500) this.show(error.message)
         })
 
         // Everything the client says, again on the page: `calls:statechange`, `calls:ended`…
@@ -499,7 +549,7 @@ export class CallWidget extends EventTarget {
         try {
             const call = await this.client.invite(String(user))
             const peer = call.peers?.find((candidate) => String(candidate.id) === String(user))
-            this.show(this.labels.inviting.replace(':name', peer?.name ?? ''))
+            this.show(fill(this.labels.inviting, { name: peer?.name ?? '' }))
         } catch (error) {
             this.show(error?.full ? this.labels.call_full : (error?.message || this.labels.call_full))
         }
@@ -540,7 +590,7 @@ export class CallWidget extends EventTarget {
     /** The pop-out was opened to ring someone: from then on its URL names the call, so a reload continues it instead of ringing again. */
     syncUrl() {
         const call = this.client.call
-        if (this.popup && call && this.windowUrl && ! location.search.includes('call=' + call.id)) {
+        if (this.inPopOut && call && this.windowUrl && ! location.search.includes('call=' + call.id)) {
             history.replaceState(null, '', this.urlFor({ call: call.id }))
         }
     }
@@ -549,16 +599,45 @@ export class CallWidget extends EventTarget {
         return this.windowUrl.replace('__ID__', encodeURIComponent(params.call ?? '')).replace('__USER__', encodeURIComponent(params.callee ?? ''))
     }
 
-    readAutoStart() {
+    /**
+     * What this pop-out was opened for. `trusted` only when the page that opened it left
+     * the matching one-time token in localStorage: a link someone sent cannot ring
+     * anybody or answer a call by itself.
+     */
+    readOpenedFor() {
         const query = new URLSearchParams(location.search)
+        const opened = { call: query.get('call') || null, callee: query.get('callee') || null, trusted: false }
+        const token = query.get('open')
 
-        return { call: query.get('call') || null, callee: query.get('callee') || null }
+        if (token) {
+            try {
+                const key = `${OPEN_TOKEN_KEY}${token}`
+                const asked = JSON.parse(localStorage.getItem(key) ?? 'null')
+                localStorage.removeItem(key)
+                opened.trusted = Boolean(asked) && Date.now() - asked.at < OPEN_TOKEN_TTL
+                    && String(asked.call ?? '') === String(opened.call ?? '') && String(asked.callee ?? '') === String(opened.callee ?? '')
+            } catch {
+                opened.trusted = false
+            }
+        }
+
+        return opened
     }
 
     /** Open the pop-out; false when the browser blocked it (then the call stays on this page). */
     openWindow(params) {
         if (! this.windowUrl) return false
-        this.popupWindow = window.open(this.urlFor(params), 'packstub-calls', this.windowFeatures)
+
+        const token = Math.random().toString(36).slice(2) + Date.now().toString(36)
+        let url = this.urlFor(params)
+        try {
+            localStorage.setItem(`${OPEN_TOKEN_KEY}${token}`, JSON.stringify({ call: params.call ?? null, callee: params.callee ?? null, at: Date.now() }))
+            url += `${url.includes('?') ? '&' : '?'}open=${token}`
+        } catch {
+            // No storage: the pop-out shows the call and waits for a click.
+        }
+
+        this.popupWindow = window.open(url, 'packstub-calls', this.windowFeatures)
         this.popupWindow?.focus()
 
         return this.popupWindow !== null
@@ -673,7 +752,7 @@ export class CallWidget extends EventTarget {
             initials: this.initials(peer?.name),
             others,
             hasOthers: others > 0,
-            othersLabel: this.labels.and_more.replace(':count', others),
+            othersLabel: fill(this.labels.and_more, { count: others }),
             // The call window
             muted: this.muted,
             cameraOff: this.cameraOff,
@@ -804,7 +883,8 @@ export class CallWidget extends EventTarget {
 
     startClock() {
         if (this.clock) return
-        const since = this.call?.answered_at ? Date.parse(this.call.answered_at) : Date.now()
+        this.clockSince = this.call?.answered_at ? Date.parse(this.call.answered_at) : null
+        const since = this.clockSince ?? Date.now()
         this.seconds = Math.max(0, Math.floor((Date.now() - since) / 1000))
         this.clock = setInterval(() => { this.seconds++; this.render() }, 1000)
     }
@@ -812,6 +892,7 @@ export class CallWidget extends EventTarget {
     stopClock() {
         clearInterval(this.clock)
         this.clock = null
+        this.clockSince = null
         this.seconds = 0
     }
 }

@@ -43,6 +43,41 @@ export class FakeMediaStream {
     addTrack(track) { this.tracks.push(track) }
 }
 
+export class FakeDataChannel extends EventTarget {
+    constructor(label, options = {}) {
+        super()
+        this.label = label
+        this.options = options
+        this.readyState = 'connecting'
+        this.bufferedAmount = 0
+        this.bufferedAmountLowThreshold = 0
+        this.sent = []
+    }
+
+    send(data) {
+        if (this.readyState !== 'open') throw new Error('InvalidStateError')
+        this.sent.push(data)
+    }
+
+    close() {
+        this.readyState = 'closed'
+        this.dispatchEvent(new Event('close'))
+    }
+
+    // ---- what the network would do ------------------------------------------
+
+    open() {
+        this.readyState = 'open'
+        this.dispatchEvent(new Event('open'))
+    }
+
+    /** The browser sent what was queued down to the threshold. */
+    drained() {
+        this.bufferedAmount = 0
+        this.dispatchEvent(new Event('bufferedamountlow'))
+    }
+}
+
 export class FakeRTCPeerConnection extends EventTarget {
     static instances = []
 
@@ -82,6 +117,30 @@ export class FakeRTCPeerConnection extends EventTarget {
         }
 
         return sender
+    }
+
+    createDataChannel(label, options) {
+        const channel = new FakeDataChannel(label, options)
+        this.channels = [...(this.channels ?? []), channel]
+        // The first channel on a connection needs a negotiation, like a track.
+        if (this.channels.length === 1 && ! this.negotiationPending) {
+            this.negotiationPending = true
+            queueMicrotask(() => {
+                this.negotiationPending = false
+                if (! this.closed) this.dispatchEvent(new Event('negotiationneeded'))
+            })
+        }
+
+        return channel
+    }
+
+    /** The other side opened a channel: it arrives here, open. */
+    receiveChannel(label) {
+        const channel = new FakeDataChannel(label)
+        channel.readyState = 'open'
+        this.dispatchEvent(Object.assign(new Event('datachannel'), { channel }))
+
+        return channel
     }
 
     removeTrack(sender) {
@@ -162,7 +221,7 @@ export function installBrowserGlobals(devices = fakeDevices()) {
     return devices
 }
 
-const fail = (message, status) => Object.assign(new Error(message), { status })
+const fail = (message, status, reason = null) => Object.assign(new Error(message), { status, reason })
 const LIVE = ['ringing', 'joined']
 
 /**
@@ -209,18 +268,21 @@ export class FakeServer {
         const liveCallsOf = (user) => [...server.calls.values()].filter((c) => c.status !== 'ended' && c.participants.some((p) => p.user_id === user && LIVE.includes(p.status)))
 
         return {
-            async start(callees, tab) {
+            async start(callees, tab, kind = 'call') {
                 server.log.push([userId, 'start', callees, tab])
                 const list = [].concat(callees ?? [])
-                if (! list.length || list.includes(userId)) throw fail('This person cannot be called.', 422)
-                const anyBusy = list.some(busy)
+                if (! list.length || list.includes(userId)) throw fail('This person cannot be called.', 422, 'not_allowed')
+                const mine = liveCallsOf(userId)
+                // A call with me on it does not count: I leave it.
+                const anyBusy = list.some((user) => liveCallsOf(user).some((c) => ! mine.includes(c)))
 
-                for (const open of liveCallsOf(userId)) server.withdraw(open, me(open))
+                // Refused before I leave anything: my current call stays.
+                if (anyBusy) throw fail('This person is on another call.', 409, 'busy')
 
-                if (anyBusy) throw fail('This person is on another call.', 409)
+                for (const open of mine) server.withdraw(open, me(open))
 
                 const created = {
-                    id: server.nextCallId++, caller_id: userId, status: 'ringing', end_reason: null, answered_at: null,
+                    id: server.nextCallId++, kind, caller_id: userId, status: 'ringing', end_reason: null, answered_at: null,
                     participants: [
                         { user_id: userId, seat: 0, status: 'joined', tab: tab ?? null, seen_at: tab ? server.now : null },
                         ...list.map((id, index) => ({ user_id: id, seat: index + 1, status: 'ringing', tab: null, seen_at: null })),
@@ -235,9 +297,10 @@ export class FakeServer {
                 server.log.push([userId, 'answer', callId, tab])
                 const found = call(callId)
                 const mine = me(found)
-                if (found.status === 'ended' || mine.status !== 'ringing') throw fail('This call is no longer ringing.', 409)
+                if (found.status === 'ended' || mine.status !== 'ringing') throw fail('This call is no longer ringing.', 409, 'not_ringing')
+                if (liveCallsOf(userId).some((c) => c !== found && me(c).status === 'joined')) throw fail('This person is on another call.', 409, 'busy')
                 Object.assign(mine, { status: 'joined', tab: tab ?? null, seen_at: tab ? server.now : null })
-                if (found.status === 'ringing') Object.assign(found, { status: 'active', answered_at: new Date(2026, 0, 1).toISOString() })
+                if (found.status === 'ringing') Object.assign(found, { status: 'active', answered_at: new Date().toISOString() })
 
                 return server.present(found, userId, tab)
             },
@@ -265,7 +328,7 @@ export class FakeServer {
                 if (me(found).status !== 'joined') throw fail('Join the call before adding people to it.', 409)
                 const existing = found.participants.find((p) => p.user_id === callee)
                 if (! callee || callee === userId || (existing && LIVE.includes(existing.status))) throw fail('This person cannot be called.', 422)
-                if (busy(callee)) throw fail('This person is on another call.', 409)
+                if (busy(callee)) throw fail('This person is on another call.', 409, 'busy')
 
                 const seat = Math.max(...found.participants.map((p) => p.seat)) + 1
                 if (existing) Object.assign(existing, { seat, status: 'ringing', tab: null, seen_at: null })
@@ -277,7 +340,8 @@ export class FakeServer {
             async send(callId, type, payload, to = null) {
                 server.log.push([userId, 'send', callId, type, to])
                 const found = call(callId)
-                if (found.status === 'ended') throw fail('This call has ended.', 410)
+                if (found.status === 'ended') throw fail('This call has ended.', 410, 'ended')
+                if (me(found).status !== 'joined') throw fail('That person is not on this call.', 422, 'not_allowed')
                 const recipients = found.participants.filter((p) => p.user_id !== userId && LIVE.includes(p.status) && (to === null || String(p.user_id) === String(to)))
                 let last = null
                 for (const recipient of recipients) {
@@ -295,13 +359,13 @@ export class FakeServer {
                 if (mine && mine.tab === tab) mine.tab = null
             },
 
-            async poll({ after = 0, call: currentId = null, tab = null, hold = false } = {}) {
+            async poll({ after = 0, call: currentId = null, tab = null, hold = false, kind = null } = {}) {
                 server.log.push([userId, 'poll', currentId, tab, hold])
-                const mine = liveCallsOf(userId).sort((a, b) => b.id - a.id)
+                const mine = liveCallsOf(userId).filter((c) => kind === null || c.kind === kind).sort((a, b) => b.id - a.id)
 
                 let current = currentId ? server.calls.get(Number(currentId)) ?? null : (mine.find((c) => me(c).status === 'joined') ?? null)
-                // Not mine, or no longer mine (I left a call that goes on); an ended call is still shown, for its reason.
-                if (current && (! me(current) || (current.status !== 'ended' && ! LIVE.includes(me(current).status)))) current = null
+                // Not mine, or no longer mine (I left a call that goes on), or of another kind; an ended call is still shown, for its reason.
+                if (current && (! me(current) || (kind !== null && current.kind !== kind) || (current.status !== 'ended' && ! LIVE.includes(me(current).status)))) current = null
 
                 let held = false
                 if (current && currentId && tab && hold && current.status !== 'ended') {
@@ -363,6 +427,7 @@ export class FakeServer {
 
         return {
             id: found.id,
+            kind: found.kind ?? 'call',
             status: found.status,
             end_reason: found.end_reason,
             role: found.caller_id === me ? 'caller' : 'callee',

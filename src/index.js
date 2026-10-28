@@ -17,10 +17,13 @@
  *   decline(callId) / hangup(callId)  → call
  *   invite(callId, userId)            → call     (optional; adds someone to a running call)
  *   send(callId, type, payload, to)   → void     (offer | answer | ice | reset | state; `to` a user id, null for every other participant)
- *   poll({ after, call, tab, hold })  → { call, incoming, signals, cursor }   (hold: this window wants my side)
+ *   poll({ after, call, tab, hold, kind }) → { call, incoming, signals, cursor }   (hold: this window wants my side; kind: only calls of that kind)
  *   leave(callId, tab)                → void     (optional; a beacon as the page unloads)
  *
- * A `call` is { id, status: ringing|active|ended, end_reason, role: caller|callee, seat, joined,
+ * A failed request rejects with an Error carrying `status` (HTTP) and `reason` (`busy`, `not_ringing`,
+ * `not_allowed`, `full`, `ended`, `too_large` from the Laravel backend).
+ *
+ * A `call` is { id, kind, status: ringing|active|ended, end_reason, role: caller|callee, seat, joined,
  * peers: [{ id, name, avatar, seat, status: ringing|joined|left|declined|missed|dropped, held, seen_ago }],
  * held, answered_at }, plus `peer`, `peer_held` and `peer_seen_ago` for the first peer.
  * Those three are all a 1-on-1 backend needs to send: without `peers`, `seat` and
@@ -49,9 +52,34 @@
  *   peerjoined  { peer }    a peer is in the call
  *   peerleft    { peer, reason }  a peer is gone (left | declined | missed | dropped)
  *   peerstate   { peer, muted, cameraOff, sharing }  a peer muted, turned the camera off or shares the screen
+ *   datachannel { peer, channel, label }  a data channel to a peer is open (see the `channels` option)
  *   ended       { call, reason }  declined | cancelled | missed | hung_up | failed | dropped | busy
  *   error       { error }
  */
+
+// A data channel's sender waits once this much is queued (see `drain()`).
+const CHANNEL_LOW_WATER = 1024 * 1024
+
+/**
+ * Wait until a data channel has room again (its buffer is down to the low-water
+ * mark): call before each large `send()` so a fast sender cannot fill the
+ * browser's buffer, which closes the channel. Resolves at once when there is room.
+ *
+ * @param {RTCDataChannel} channel
+ */
+export function drain(channel) {
+    if (channel.readyState !== 'open' || channel.bufferedAmount <= channel.bufferedAmountLowThreshold) return Promise.resolve()
+
+    return new Promise((resolve) => {
+        const done = () => {
+            channel.removeEventListener('bufferedamountlow', done)
+            channel.removeEventListener('close', done)
+            resolve()
+        }
+        channel.addEventListener('bufferedamountlow', done)
+        channel.addEventListener('close', done)
+    })
+}
 
 const randomId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 
@@ -67,11 +95,15 @@ export class HttpSignaling {
      * @param {Record<string, string>} [options.headers] e.g. { 'X-CSRF-TOKEN': token }
      * @param {Record<string, string>} [options.beaconFields] form fields sent with the leave beacon, e.g. { _token: token }
      * @param {typeof fetch} [options.fetch]
+     * @param {number} [options.timeout]  milliseconds before a request is given up (a stalled poll would stop polling, a stalled signal every signal behind it)
+     * @param {string} [options.kind]  poll only for calls of this kind (`call` for the widgets)
      */
-    constructor({ routes, headers = {}, beaconFields = {}, fetch: fetchFn } = {}) {
+    constructor({ routes, headers = {}, beaconFields = {}, fetch: fetchFn, timeout = 10000, kind = null } = {}) {
         this.routes = routes
         this.headers = headers
         this.beaconFields = beaconFields
+        this.timeout = timeout
+        this.kind = kind
         this.fetch = fetchFn || ((...args) => globalThis.fetch(...args))
 
         // Only a backend with the route can add people to a call.
@@ -88,6 +120,7 @@ export class HttpSignaling {
             credentials: 'same-origin',
             headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...this.headers },
             body: body === undefined ? undefined : JSON.stringify(body),
+            signal: this.timeout && typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(this.timeout) : undefined,
         })
 
         const data = await response.json().catch(() => ({}))
@@ -95,6 +128,7 @@ export class HttpSignaling {
         if (! response.ok) {
             const error = new Error(data.message || `${method} ${url} failed (${response.status})`)
             error.status = response.status
+            error.reason = data.reason ?? null
             throw error
         }
 
@@ -115,11 +149,12 @@ export class HttpSignaling {
         return this.request('POST', this.url('signal', callId), to === null || to === undefined ? { type, payload } : { type, payload, to })
     }
 
-    poll({ after = 0, call = null, tab = null, hold = false } = {}) {
+    poll({ after = 0, call = null, tab = null, hold = false, kind = this.kind } = {}) {
         const query = new URLSearchParams({ after: String(after) })
         if (call) query.set('call', String(call))
         if (tab) query.set('tab', tab)
         if (hold) query.set('hold', '1')
+        if (kind) query.set('kind', kind)
 
         return this.request('GET', `${this.routes.poll}?${query}`)
     }
@@ -191,10 +226,13 @@ class Peer {
  * waits for the other side's first offer and answers it.
  */
 class Link {
-    constructor(mesh, peer, polite) {
+    constructor(mesh, peer, polite, fresh = false) {
         this.mesh = mesh
         this.peer = peer
         this.polite = polite
+        // Made after a page load (it sent `reset`); settled once an offer and an answer went through.
+        this.fresh = fresh
+        this.settled = false
         this.session = randomId()
         this.peerSession = null
         this.negotiated = ! polite
@@ -206,13 +244,20 @@ class Link {
         this.stream = new MediaStream()
 
         const client = mesh.client
-        const pc = new RTCPeerConnection({ iceServers: client.iceServers })
+        const pc = new RTCPeerConnection({ iceServers: client.iceServers, iceTransportPolicy: client.iceTransportPolicy })
         this.pc = pc
+        this.channels = new Map()
 
-        const source = client.localSource()
-        source?.getTracks().forEach((track) => {
-            const sender = pc.addTrack(track, source)
-            if (track.kind === 'video') sender.__video = true
+        this.addTracks(client.localSource())
+
+        // The data channels: opened by the side that offers, so on a call without media the
+        // channel itself starts the negotiation; the other side receives them.
+        if (! polite) {
+            for (const label of client.channelLabels) this.adopt(pc.createDataChannel(label, { ordered: true }))
+        }
+
+        pc.addEventListener('datachannel', ({ channel }) => {
+            if (! this.closed) this.adopt(channel)
         })
 
         pc.addEventListener('track', ({ track }) => {
@@ -251,6 +296,39 @@ class Link {
         return this.pc.connectionState === 'connected'
     }
 
+    /**
+     * Send these tracks to the peer (the ones not sent yet): a sender whose track was
+     * stopped (the microphone asked for again with the camera) takes the new one in
+     * place, anything else is added, which renegotiates.
+     */
+    addTracks(source) {
+        const senders = this.pc.getSenders()
+        const sent = new Set(senders.map((sender) => sender.track).filter(Boolean))
+
+        source?.getTracks().forEach((track) => {
+            if (sent.has(track)) return
+            const spent = senders.find((sender) => sender.track?.kind === track.kind && sender.track.readyState === 'ended')
+            if (spent) {
+                spent.replaceTrack(track)
+                return
+            }
+            const sender = this.pc.addTrack(track, source)
+            if (track.kind === 'video') sender.__video = true
+        })
+    }
+
+    adopt(channel) {
+        channel.bufferedAmountLowThreshold = CHANNEL_LOW_WATER
+        this.channels.set(channel.label, channel)
+
+        const open = () => {
+            if (! this.closed) this.mesh.client.emit('datachannel', { peer: this.peer.snapshot(), channel, label: channel.label })
+        }
+
+        if (channel.readyState === 'open') open()
+        else channel.addEventListener('open', open, { once: true })
+    }
+
     send(type, payload) {
         this.mesh.client.send(type, { ...payload, session: this.session }, this.peer.id)
     }
@@ -269,14 +347,18 @@ class Link {
 
             if (type === 'offer') {
                 const collision = this.makingOffer || pc.signalingState !== 'stable'
-                this.ignoreOffer = ! this.polite && collision
+                // Two fresh pages offering to each other: the higher seat gives way.
+                const yields = this.polite || (this.fresh && ! this.settled && client.seat > (this.peer.seat ?? -1))
+                this.ignoreOffer = ! yields && collision
                 if (this.ignoreOffer) return
+                if (collision) this.polite = true
 
                 this.peerSession ??= payload.session ?? null
                 await pc.setRemoteDescription({ type: 'offer', sdp: sdp(payload.sdp) })
                 await this.flushCandidates()
                 await pc.setLocalDescription()
                 this.negotiated = true
+                this.settled = true
                 // Which offer this answers: the offerer may have reloaded meanwhile and offered again.
                 this.send('answer', { sdp: pc.localDescription.sdp, offer: payload.session ?? null })
                 client.negotiated(this.peer)
@@ -285,6 +367,7 @@ class Link {
                 if (payload.offer && payload.offer !== this.session) return
                 this.peerSession ??= payload.session ?? null
                 await pc.setRemoteDescription({ type: 'answer', sdp: sdp(payload.sdp) })
+                this.settled = true
                 await this.flushCandidates()
                 client.negotiated(this.peer)
             } else if (type === 'ice') {
@@ -326,6 +409,8 @@ class Link {
     close() {
         if (this.closed) return
         this.closed = true
+        for (const channel of this.channels.values()) { try { channel.close() } catch {} }
+        this.channels.clear()
         this.pc.getSenders().forEach((sender) => { try { this.pc.removeTrack(sender) } catch {} })
         this.pc.close()
     }
@@ -349,8 +434,10 @@ class Link {
  *   signal(peer, type, payload, from)     offer | answer | ice (and anything the topology itself sends)
  *   connected(peer)                       whether the peer's media flows
  *   replaceVideo(track)                   the screen in place of the camera (null: nothing)
+ *   addTracks(stream)                     media started mid-call (`startMedia()`): send these tracks too
+ *   channel(peer, label)                  the open data channel with this label to a peer, or null
  *   leave()                               hang up: close everything
- * The client offers: `iceServers`, `localSource()`, `send(type, payload, to)`, `emit(type, detail)`,
+ * The client offers: `iceServers`, `iceTransportPolicy`, `channelLabels`, `seat`, `localSource()`, `send(type, payload, to)`, `emit(type, detail)`,
  * `remoteStreamFrom(peer, stream)`, `connectionChanged(peer, connected)`, `negotiated(peer)`.
  */
 export class MeshTopology {
@@ -365,7 +452,7 @@ export class MeshTopology {
 
     connect(peer, { polite = false, reset = false } = {}) {
         this.links.get(peer.id)?.close()
-        const link = new Link(this, peer, polite)
+        const link = new Link(this, peer, polite, reset)
         this.links.set(peer.id, link)
         // Before the offer that follows the tracks: the peer rebuilds its side first.
         if (reset) link.send('reset', {})
@@ -379,6 +466,16 @@ export class MeshTopology {
     }
 
     reset(peer) {
+        // Both pages loaded at about the same time: each sent `reset` and an offer. The
+        // lower seat keeps its fresh connection and offer, the higher seat answers it;
+        // both going polite would leave nobody offering.
+        const link = this.links.get(peer.id)
+        if (link?.fresh && ! link.settled && this.client.seat < (peer.seat ?? Infinity)) {
+            // Their page may have missed my offer (it claimed after I sent it): once more.
+            if (link.pc.localDescription?.type === 'offer') link.send('offer', { sdp: link.pc.localDescription.sdp })
+            return
+        }
+
         this.connect(peer, { polite: true })
     }
 
@@ -396,6 +493,18 @@ export class MeshTopology {
 
     async replaceVideo(track) {
         for (const link of this.links.values()) await link.replaceVideo(track)
+    }
+
+    /** Media started on a call that had none (or more of it): every connection sends it too. */
+    addTracks(source) {
+        for (const link of this.links.values()) link.addTracks(source)
+    }
+
+    /** The open data channel with this label to a peer, or null. */
+    channel(peer, label) {
+        const channel = this.links.get(peer.id)?.channels.get(label)
+
+        return channel?.readyState === 'open' ? channel : null
     }
 
     leave() {
@@ -421,13 +530,20 @@ export class CallClient extends EventTarget {
      * @param {number} [options.maxParticipants]  people on one call, me included; `callUser()` and `canInvite()` respect it (the server keeps the hard limit)
      * @param {object|((call: object, client: CallClient) => object)} [options.topology]  how media travels: a topology, or a function picking one per call from its `peers` (default: a MeshTopology)
      * @param {(constraints: MediaStreamConstraints) => Promise<MediaStream>} [options.getUserMedia]
+     * @param {'all'|'relay'} [options.iceTransportPolicy]  `relay`: everything through TURN, nobody learns the other's addresses
+     * @param {'video'|'audio'|'none'} [options.media]  what a call starts with (default: `video` per the `video` option); `none` connects without asking for the camera or the microphone, for a call that only needs data channels until `startMedia()`
+     * @param {string[]} [options.channels]  data channels to open to every peer (ordered), surfaced by the `datachannel` event
      */
-    constructor({ signaling, iceServers = [], video = true, poll = { idle: 5000, active: 1000 }, reconnectTimeout = 15000, resumes = true, maxParticipants = 4, topology = null, getUserMedia } = {}) {
+    constructor({ signaling, iceServers = [], video = true, poll = {}, reconnectTimeout = 15000, resumes = true, maxParticipants = 4, topology = null, getUserMedia, iceTransportPolicy = 'all', media = null, channels = [] } = {}) {
         super()
         this.signaling = signaling
         this.iceServers = iceServers
+        this.iceTransportPolicy = iceTransportPolicy === 'relay' ? 'relay' : 'all'
         this.video = video
-        this.pollIntervals = poll
+        this.media = media ?? (video ? 'video' : 'audio')
+        this.channelLabels = [...channels]
+        // `hidden`: how often a hidden tab with no call asks for incoming calls.
+        this.pollIntervals = { idle: 5000, active: 1000, hidden: 15000, ...poll }
         this.reconnectTimeout = reconnectTimeout
         this.resumes = resumes
         this.maxParticipants = maxParticipants
@@ -460,6 +576,13 @@ export class CallClient extends EventTarget {
         this.polling = false
         this.inFlight = null
         this.takingOver = null
+        // Bumped whenever this window lets go of a call: a poll sent before is not applied after.
+        this.epoch = 0
+        // Set while this window is about to run a call (answering, resuming): its polls hold the side.
+        this.joining = false
+        this.pending = null
+        this.mediaRequest = null
+        this.onVisibility = () => { if (! globalThis.document?.hidden) this.schedule(0) }
     }
 
     // ---- 1-on-1 conveniences ---------------------------------------------------
@@ -503,12 +626,33 @@ export class CallClient extends EventTarget {
     start() {
         if (this.polling) return
         this.polling = true
+        globalThis.document?.addEventListener?.('visibilitychange', this.onVisibility)
         this.schedule(0)
     }
 
     stop() {
         this.polling = false
         clearTimeout(this.timer)
+        globalThis.document?.removeEventListener?.('visibilitychange', this.onVisibility)
+    }
+
+    /**
+     * Take everything down: stop polling, let go of the call for the next page
+     * (the leave beacon) and close the connections and the camera, without events.
+     */
+    destroy() {
+        this.stop()
+        this.leave()
+        this.epoch++
+        this.topology?.leave()
+        this.topology = null
+        this.joined = false
+        this.releaseMedia()
+        clearTimeout(this.dropTimer)
+        this.dropTimer = null
+        this.call = null
+        this.roster.clear()
+        this.state = 'idle'
     }
 
     /**
@@ -525,7 +669,8 @@ export class CallClient extends EventTarget {
     schedule(delay) {
         clearTimeout(this.timer)
         if (! this.polling) return
-        const interval = delay ?? (['idle', 'elsewhere'].includes(this.state) ? this.pollIntervals.idle : this.pollIntervals.active)
+        const hidden = this.state === 'idle' && globalThis.document?.hidden === true
+        const interval = delay ?? (hidden ? this.pollIntervals.hidden : ['idle', 'elsewhere'].includes(this.state) ? this.pollIntervals.idle : this.pollIntervals.active)
         this.timer = setTimeout(() => this.tick(), interval)
     }
 
@@ -534,9 +679,11 @@ export class CallClient extends EventTarget {
         const call = this.call?.id ?? this.resumeId ?? null
         // Only a window that runs (or is about to run) the call takes the side;
         // a tab showing the chip for a pop-out just watches.
-        const hold = Boolean(this.joined || this.resumeId)
+        const hold = Boolean(this.joined || this.joining || this.resumeId)
+        const epoch = this.epoch
         this.inFlight = this.signaling.poll({ after: this.cursor, call, tab: this.tab, hold })
-            .then((data) => this.handlePoll(data, call))
+            // Sent before this window hung up or declined: what it says is about a call that is gone here.
+            .then((data) => epoch === this.epoch ? this.handlePoll(data, call) : undefined)
             .catch((error) => this.emit('error', { error }))
             .finally(() => { this.inFlight = null; this.schedule() })
         await this.inFlight
@@ -578,7 +725,9 @@ export class CallClient extends EventTarget {
                 this.syncPeers(call)
                 this.setState('elsewhere')
             } else {
-                await this.resume(call)
+                // Not awaited: the camera prompt may stay open for a while, and the polls
+                // (this window's heartbeat) must go on meanwhile.
+                this.resume(call)
             }
         } else if (! call && this.call && asked !== null && String(asked) === String(this.call.id)) {
             // The server no longer has me on it: hung up elsewhere, or, while it rang here,
@@ -607,20 +756,29 @@ export class CallClient extends EventTarget {
 
         if (this.autoAnswer && String(this.autoAnswer) === String(call.id)) {
             this.autoAnswer = null
-            await this.accept()
+            // Not awaited, so the polls keep holding the side while the camera prompt is open.
+            this.accept().catch(() => {})
         }
     }
 
     // ---- calling -------------------------------------------------------------
 
     /** Ring a user, or a group of them (an array). Resolves once the call is ringing on the server. */
-    async callUser(users) {
+    callUser(users) {
+        // A second click while the first call is being set up gets the same call.
+        this.pending ??= this.placeCall(users).finally(() => { this.pending = null })
+
+        return this.pending
+    }
+
+    async placeCall(users) {
         const callees = Array.isArray(users) ? users : [users]
         if (callees.length + 1 > this.maxParticipants) {
             throw Object.assign(new Error(`A call takes up to ${this.maxParticipants} people.`), { full: true })
         }
 
         if (this.state !== 'idle') await this.hangUp()
+        const epoch = this.epoch
 
         try {
             await this.acquireMedia()
@@ -634,8 +792,16 @@ export class CallClient extends EventTarget {
             call = await this.signaling.start(users, this.tab)
         } catch (error) {
             this.releaseMedia()
-            this.emit('error', { error })
+            // Someone on another call: the call ends before it rang, as `busy`.
+            if (error?.reason === 'busy') this.emit('ended', { call: null, reason: 'busy', error })
+            else this.emit('error', { error })
             throw error
+        }
+
+        if (epoch !== this.epoch) {
+            // Something else took this window meanwhile (an incoming call was answered): give the new call up.
+            this.signaling.hangup(call.id).catch(() => {})
+            throw new Error('The call was given up.')
         }
 
         this.setState('calling')
@@ -646,26 +812,52 @@ export class CallClient extends EventTarget {
     }
 
     /** Accept the call that is ringing. */
-    async accept() {
+    accept() {
+        // A double click on Accept answers once.
+        this.pending ??= this.answerCall().finally(() => { this.pending = null })
+
+        return this.pending
+    }
+
+    async answerCall() {
         if (this.state !== 'ringing' || ! this.call) return
+        const epoch = this.epoch
+        const callId = this.call.id
+        this.joining = true
 
         try {
             await this.acquireMedia()
         } catch (error) {
+            this.joining = false
             this.emit('error', { error, media: true })
             await this.decline()
             throw error
         }
 
-        let call
-        try {
-            call = await this.signaling.answer(this.call.id, this.tab)
-        } catch (error) {
-            this.releaseMedia()
-            this.emit('error', { error })
-            this.reset()
+        // The caller gave up (or the call was declined elsewhere) while the prompt was open.
+        if (epoch !== this.epoch || this.call?.id !== callId) {
+            this.joining = false
+            if (! this.call) this.releaseMedia()
             return
         }
+
+        let call
+        try {
+            call = await this.signaling.answer(callId, this.tab)
+        } catch (error) {
+            this.joining = false
+            if (epoch !== this.epoch) return
+            this.releaseMedia()
+            const call = this.call
+            this.reset()
+            // No longer ringing (cancelled, or answered on another device): an ending, not an error.
+            if (error?.reason === 'not_ringing') this.emit('ended', { call, reason: 'missed' })
+            else this.emit('error', { error })
+            return
+        }
+
+        this.joining = false
+        if (epoch !== this.epoch) return
 
         this.setState('connecting')
         this.join(call)
@@ -725,11 +917,22 @@ export class CallClient extends EventTarget {
      */
     async resume(call) {
         this.call = call
+        const epoch = this.epoch
+        this.joining = true
 
+        try {
+            await this.resumeCallOn(call, epoch)
+        } finally {
+            this.joining = false
+        }
+    }
+
+    async resumeCallOn(call, epoch) {
         // Take the side first: the answers to the offers sent below only reach the
         // window that holds it, and a claim moves the cursor past the old signals.
         try {
             const claim = await this.signaling.poll({ after: this.cursor, call: call.id, tab: this.tab, hold: true })
+            if (epoch !== this.epoch) return
             if (typeof claim.cursor === 'number' && claim.cursor > this.cursor) this.cursor = claim.cursor
             if (! claim.call || claim.call.status === 'ended') return this.finish(claim.call?.end_reason || 'hung_up')
             call = { ...call, ...claim.call }
@@ -752,6 +955,8 @@ export class CallClient extends EventTarget {
             await this.hangUp('failed')
             return
         }
+
+        if (epoch !== this.epoch || this.call?.id !== call.id) return
 
         this.setState(call.status === 'ringing' ? 'calling' : 'connecting')
         this.join(call, { fresh: true })
@@ -916,6 +1121,7 @@ export class CallClient extends EventTarget {
      */
     join(call, { fresh = false } = {}) {
         this.call = call
+        this.topology?.leave()
         this.topology = this.topologyFor(call)
         this.topology.attach(this)
         this.topology.join?.(call)
@@ -970,7 +1176,15 @@ export class CallClient extends EventTarget {
     async shareScreen() {
         if (! this.joined || this.screenStream) return
 
+        const callId = this.call?.id
         const screen = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+
+        // The call ended (or another began) while the picker was open: share nothing.
+        if (! this.joined || this.call?.id !== callId || this.screenStream) {
+            screen.getTracks().forEach((track) => track.stop())
+            return
+        }
+
         const track = screen.getVideoTracks()[0]
         track.addEventListener('ended', () => this.stopSharing())
         this.screenStream = screen
@@ -989,6 +1203,44 @@ export class CallClient extends EventTarget {
         this.publishLocal()
         await this.topology?.replaceVideo?.(this.cameraStream?.getVideoTracks()[0] ?? null)
         this.announceState()
+    }
+
+    /**
+     * Turn on media during a call that started with less (`media: 'none'`, or a voice
+     * call going to video): asks for the microphone (and the camera for `video`) and
+     * sends the tracks to every peer, which renegotiates each connection.
+     *
+     * @param {'audio'|'video'} kind
+     */
+    async startMedia(kind = 'audio') {
+        const order = ['none', 'audio', 'video']
+        if (order.indexOf(kind) <= order.indexOf(this.media) && this.cameraStream) return this.cameraStream
+
+        const previous = this.cameraStream
+        this.media = kind
+        this.cameraStream = null
+
+        let stream
+        try {
+            stream = await this.acquireMedia()
+        } catch (error) {
+            this.cameraStream = previous
+            this.emit('error', { error, media: true })
+            throw error
+        }
+
+        // The tracks asked for before (a microphone going to video) are replaced, not doubled.
+        previous?.getTracks().forEach((track) => track.stop())
+        if (this.joined) this.topology?.addTracks?.(this.localSource())
+
+        return stream
+    }
+
+    /** The open data channel with this label to a peer (the first peer by default), or null. */
+    channel(label, peerId = null) {
+        const peer = peerId === null ? this.peer : this.roster.get(String(peerId))
+
+        return peer ? this.topology?.channel?.(peer, label) ?? null : null
     }
 
     // ---- what a topology uses --------------------------------------------------
@@ -1029,15 +1281,23 @@ export class CallClient extends EventTarget {
 
     // ---- internals -----------------------------------------------------------
 
-    async acquireMedia() {
-        if (this.cameraStream) return this.cameraStream
+    acquireMedia() {
+        if (this.cameraStream || this.media === 'none') return Promise.resolve(this.cameraStream)
 
+        // Asked twice at once (a double click): one prompt, one stream.
+        this.mediaRequest ??= this.requestMedia().finally(() => { this.mediaRequest = null })
+
+        return this.mediaRequest
+    }
+
+    async requestMedia() {
+        const video = this.media === 'video'
         let stream
         try {
-            stream = await this.getUserMedia({ audio: true, video: this.video })
+            stream = await this.getUserMedia({ audio: true, video })
         } catch (error) {
             // No camera, or it is busy: fall back to a voice call rather than fail.
-            if (! this.video || ! ['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error.name)) throw error
+            if (! video || ! ['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error.name)) throw error
             stream = await this.getUserMedia({ audio: true, video: false })
         }
 
@@ -1129,6 +1389,7 @@ export class CallClient extends EventTarget {
     }
 
     reset() {
+        this.epoch++
         this.topology?.leave()
         this.topology = null
         this.joined = false

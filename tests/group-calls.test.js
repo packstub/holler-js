@@ -469,9 +469,9 @@ describe('topologies', () => {
         expect(ion.link).toBeNull()
 
         // Signals from the server reach the topology with the sender.
-        await server.clientFor('mihai').send(1, 'offer', { sdp: 'x' }, 'ana')
+        await server.clientFor('ion').send(1, 'offer', { sdp: 'x' }, 'ana')
         await settle()
-        expect(ana.topology.calls.at(-1)).toEqual(['signal', 'mihai', 'offer', 'mihai'])
+        expect(ana.topology.calls.at(-1)).toEqual(['signal', 'ion', 'offer', 'ion'])
 
         // The topology reports media: the call becomes active, the peer shows connected with a stream.
         ana.topology.up('ion', new MediaStream())

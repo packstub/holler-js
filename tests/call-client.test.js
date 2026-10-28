@@ -64,7 +64,7 @@ describe('ringing', () => {
         expect(ion.state).toBe('calling')
         expect(devices.getUserMedia).toHaveBeenCalledWith({ audio: true, video: true })
         expect(ion.pc).toBeInstanceOf(FakeRTCPeerConnection)
-        expect(ion.pc.configuration).toEqual({ iceServers: [] })
+        expect(ion.pc.configuration).toEqual({ iceServers: [], iceTransportPolicy: 'all' })
 
         await settle()
 
@@ -80,7 +80,7 @@ describe('ringing', () => {
 
         await ion.callUser('ana')
 
-        expect(ion.pc.configuration).toEqual({ iceServers })
+        expect(ion.pc.configuration).toEqual({ iceServers, iceTransportPolicy: 'all' })
     })
 
     it('tells the caller when the other person is busy and gives the camera back', async () => {
@@ -88,10 +88,12 @@ describe('ringing', () => {
         const ion = client('ion')
         ion.start()
 
-        await expect(ion.callUser('ana')).rejects.toMatchObject({ status: 409 })
+        await expect(ion.callUser('ana')).rejects.toMatchObject({ status: 409, reason: 'busy' })
 
         expect(ion.state).toBe('idle')
-        expect(ion.events('error')[0].error.status).toBe(409)
+        // An ending, not an error: the call ended as busy before it rang.
+        expect(ion.events('error')).toHaveLength(0)
+        expect(ion.events('ended')[0]).toMatchObject({ call: null, reason: 'busy' })
         const stream = await devices.getUserMedia.mock.results[0].value
         expect(stream.getTracks().every((track) => track.readyState === 'ended')).toBe(true)
     })

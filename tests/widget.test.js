@@ -300,12 +300,13 @@ describe('the widget', () => {
         const ana = widget('ana', { windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
 
         ion.callUser('ana')
-        expect(opened).toEqual(['/calls/window?call=&callee=ana'])
+        expect(opened).toHaveLength(1)
+        expect(opened[0]).toMatch(/^\/calls\/window\?call=&callee=ana&open=\w+$/)
         expect(ion.state).toBe('idle')
 
-        // Ion's pop-out: rings Ana from the URL.
-        history.replaceState(null, '', '/calls/window?call=&callee=ana')
-        const ionWindow = widget('ion', { popup: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
+        // Ion's pop-out: rings Ana from the URL, with the token the page left for it.
+        history.replaceState(null, '', opened[0])
+        const ionWindow = widget('ion', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
         expect(ionWindow.el.className).toBe('calls calls-popup')
         await settle()
         expect(ionWindow.state).toBe('calling')
@@ -316,10 +317,10 @@ describe('the widget', () => {
 
         // Ana accepts from the toast: her pop-out opens for the call and her page hands off.
         visible(ana, 'incoming').querySelector('[data-calls-action="accept"]').click()
-        expect(opened.at(-1)).toBe('/calls/window?call=1&callee=')
+        expect(opened.at(-1)).toMatch(/^\/calls\/window\?call=1&callee=&open=\w+$/)
         expect(ana.state).toBe('elsewhere')
-        history.replaceState(null, '', '/calls/window?call=1&callee=')
-        const anaWindow = widget('ana', { popup: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
+        history.replaceState(null, '', opened.at(-1))
+        const anaWindow = widget('ana', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
         await settle()
         connectAll(ionWindow, anaWindow)
         await settle()
@@ -332,6 +333,24 @@ describe('the widget', () => {
         await settle()
         expect(anaWindow.state).toBe('idle')
         expect(ionWindow.state).toBe('idle')
+    })
+
+    it('does nothing by itself for a pop-out link someone sent: no call placed, no call answered', async () => {
+        const ion = widget('ion')
+        await ion.client.callUser('ana')
+
+        // A link to ring Ion, and one to answer the call ringing Ana, without the page's token (or with a forged one).
+        history.replaceState(null, '', '/calls/window?call=&callee=ion')
+        const forged = widget('ana', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
+        history.replaceState(null, '', `/calls/window?call=${ion.client.call.id}&callee=&open=guess`)
+        const answering = widget('ana', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
+        await settle()
+
+        expect(server.log.filter(([user, action]) => user === 'ana' && ['start', 'answer'].includes(action))).toHaveLength(0)
+        expect(forged.state).not.toBe('calling')
+        // The call ringing her shows, with Accept, and waits for a click.
+        expect(answering.state).toBe('ringing')
+        expect(visible(answering, 'incoming')).not.toBeNull()
     })
 
     it('destroys cleanly: the element goes, polling stops', async () => {

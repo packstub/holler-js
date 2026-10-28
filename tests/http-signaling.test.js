@@ -115,3 +115,42 @@ describe('HttpSignaling', () => {
         expect(globalFetch).toHaveBeenCalledTimes(1)
     })
 })
+
+describe('HttpSignaling for groups', () => {
+    let fetchFn
+
+    beforeEach(() => {
+        fetchFn = vi.fn(async () => ok({}))
+    })
+
+    it('rings a group with `callees` and one person with `callee`', async () => {
+        const signaling = new HttpSignaling({ routes, fetch: fetchFn })
+
+        await signaling.start('42', 'tab-a')
+        await signaling.start(['42', '43'], 'tab-a')
+
+        expect(JSON.parse(fetchFn.mock.calls[0][1].body)).toEqual({ callee: '42', tab: 'tab-a' })
+        expect(JSON.parse(fetchFn.mock.calls[1][1].body)).toEqual({ callees: ['42', '43'], tab: 'tab-a' })
+    })
+
+    it('addresses a signal to one participant when told to, and to everyone otherwise', async () => {
+        const signaling = new HttpSignaling({ routes, fetch: fetchFn })
+
+        await signaling.send(5, 'state', { muted: true })
+        await signaling.send(5, 'offer', { sdp: 'v=0' }, '43')
+
+        expect(JSON.parse(fetchFn.mock.calls[0][1].body)).toEqual({ type: 'state', payload: { muted: true } })
+        expect(JSON.parse(fetchFn.mock.calls[1][1].body)).toEqual({ type: 'offer', payload: { sdp: 'v=0' }, to: '43' })
+    })
+
+    it('invites through the route when there is one, and has no invite otherwise', async () => {
+        const without = new HttpSignaling({ routes, fetch: fetchFn })
+        expect(without.invite).toBeUndefined()
+
+        const signaling = new HttpSignaling({ routes: { ...routes, invite: '/calls/__ID__/invite' }, fetch: fetchFn })
+        await signaling.invite(7, '43')
+
+        expect(fetchFn.mock.calls[0][0]).toBe('/calls/7/invite')
+        expect(JSON.parse(fetchFn.mock.calls[0][1].body)).toEqual({ callee: '43' })
+    })
+})

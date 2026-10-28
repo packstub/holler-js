@@ -1,7 +1,7 @@
 {
     "name": "@packstub/calls",
     "version": "0.1.0",
-    "description": "1-on-1 WebRTC calls (audio, video, screen share) with a pluggable signaling backend. Framework-agnostic; the engine behind packstub/calls and packstub/filament-calls.",
+    "description": "WebRTC calls (audio, video, screen share), 1-on-1 and small groups over a mesh, with a pluggable signaling backend and a pluggable topology. Framework-agnostic; the engine behind packstub/calls and packstub/filament-calls.",
     "type": "module",
     "main": "src/index.js",
     "module": "src/index.js",
@@ -17,6 +17,8 @@
         "voice-call",
         "screen-share",
         "peer-to-peer",
+        "group-call",
+        "mesh",
         "signaling",
         "perfect-negotiation"
     ],
@@ -37,6 +39,7 @@
         "test:watch": "vitest"
     },
     "devDependencies": {
+        "jsdom": "^29.1.1",
         "vitest": "^3.2.4"
     }
 }

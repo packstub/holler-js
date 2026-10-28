@@ -155,6 +155,30 @@ A signal is `{ id, call, type, payload, from }`, `from` being the sender's user 
 
 `HttpSignaling` maps these onto the routes above; `__ID__` in a route is replaced with the call id. `start` posts `{ callee, tab }` for one person and `{ callees, tab }` for a group; `send` adds `to` when set; `invite` posts `{ callee }`. [Calls for Laravel](https://github.com/packstub/calls) implements the server side; the README there documents the endpoints for other backends.
 
+## The widget
+
+`CallWidget` is the UI over `CallClient`, plain DOM, no framework: the incoming-call toast, the call window (a tile per other participant with their video or avatar, your own picture, mute, camera, screen share, hang up), the chip shown while a pop-out window runs the call, and notices. A shared screen takes the stage with the cameras in a strip on top or on the right, wherever it gets more room.
+
+```js
+import { CallWidget } from '@packstub/calls/widget'
+import '@packstub/calls/widget.css'
+
+const widget = new CallWidget({
+    routes, csrf,                       // an HttpSignaling is made from these (or pass `signaling`, or a `client` of your own)
+    iceServers, video, maxParticipants,
+    windowUrl: '/calls/window?call=__ID__&callee=__USER__',  // set it and calls open in a window of their own
+    labels: { incoming: 'te sună' },     // any of the texts
+})
+```
+
+Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on); `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script. Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `popup: true` makes the widget fill the window and read `?call=` or `?callee=` from the URL. `destroy()` takes it all down.
+
+Three ways to make it yours:
+
+- **CSS.** Every class is `calls-*`; the colours and sizes are custom properties on `.calls` (`--calls-bg`, `--calls-fg`, `--calls-dim`, `--calls-accent`, `--calls-danger`, `--calls-success`, `--calls-stage`, `--calls-radius`, `--calls-width`, `--calls-z`, `--calls-font`). Skip `widget.css` and write your own against the class names when that is not enough.
+- **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-calls-text="key"`, `data-calls-show="key"` (or `"!key"`), `data-calls-class="name:key …"`, `data-calls-attr="name:key …"`, `data-calls-src="key"`, `data-calls-video="key"` (a MediaStream) and `data-calls-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|focusWindow"`. The root of a template carries `data-calls-scope`; the window's needs `data-calls-ref="grid"` for the tiles and `data-calls-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `autostart: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `role`).
+- **Subclass.** `model()`, `tileModel()`, `render()`, `renderTiles()`, `placeStrip()` and the actions are methods on `CallWidget`.
+
 ## Testing
 
 ```bash

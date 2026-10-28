@@ -1,0 +1,367 @@
+/*
+ * @packstub/calls — the call widget. Dark on purpose, like every call window.
+ *
+ * Restyle it through the custom properties on `.calls` (set them on `:root` or on `.calls`),
+ * or drop this file and write your own against the `calls-*` class names.
+ */
+
+.calls {
+    --calls-bg: #18181b;
+    --calls-fg: #fafafa;
+    --calls-dim: #a1a1aa;
+    --calls-stage: #09090b;
+    --calls-tile: #18181b;
+    --calls-control: #3f3f46;
+    --calls-control-hover: #52525b;
+    --calls-accent: #4f46e5;
+    --calls-accent-hover: #6366f1;
+    --calls-danger: #dc2626;
+    --calls-danger-hover: #ef4444;
+    --calls-success: #16a34a;
+    --calls-success-hover: #22c55e;
+    --calls-radius: 1rem;
+    --calls-width: 24rem;
+    --calls-z: 60;
+    --calls-font: inherit;
+
+    position: fixed;
+    inset-inline-end: 1rem;
+    bottom: 1rem;
+    z-index: var(--calls-z);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.75rem;
+    pointer-events: none;
+    font-family: var(--calls-font);
+    font-size: 0.875rem;
+    line-height: 1.4;
+    color: var(--calls-fg);
+}
+
+.calls-slot { display: contents; }
+.calls-slot[hidden] { display: none; }
+
+.calls-card {
+    pointer-events: auto;
+    background: var(--calls-bg);
+    color: var(--calls-fg);
+    border-radius: var(--calls-radius);
+    box-shadow: 0 20px 40px -12px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.08);
+    overflow: hidden;
+}
+
+.calls-incoming,
+.calls-chip {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    padding: 0.875rem 1rem;
+    min-width: 20rem;
+}
+
+.calls-chip { gap: 0.75rem; min-width: 0; padding: 0.5rem 0.75rem 0.5rem 0.5rem; }
+
+.calls-person {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 1;
+    min-width: 0;
+    text-align: start;
+}
+
+.calls-chip-open {
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.5rem;
+}
+
+.calls-chip-open:hover { background: rgb(255 255 255 / 0.06); }
+
+.calls-who { display: flex; flex-direction: column; min-width: 0; }
+
+.calls-name {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.calls-dim {
+    color: var(--calls-dim);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.calls-avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 9999px;
+    object-fit: cover;
+    flex: none;
+}
+
+.calls-avatar-initials {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--calls-accent);
+    color: #fff;
+    font-weight: 600;
+}
+
+.calls-avatar-lg {
+    width: 5rem;
+    height: 5rem;
+    font-size: 1.5rem;
+}
+
+.calls-actions,
+.calls-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.calls-controls {
+    justify-content: center;
+    padding: 0.75rem 1rem;
+}
+
+.calls-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    border-radius: 9999px;
+    border: 0;
+    cursor: pointer;
+    background: var(--calls-control);
+    color: var(--calls-fg);
+    transition: background-color 0.15s, transform 0.15s;
+}
+
+.calls-btn:hover { background: var(--calls-control-hover); }
+.calls-btn:active { transform: scale(0.95); }
+.calls-btn-off { background: var(--calls-fg); color: var(--calls-bg); }
+.calls-btn-off:hover { background: #e4e4e7; }
+.calls-btn-on { background: var(--calls-accent); }
+.calls-btn-on:hover { background: var(--calls-accent-hover); }
+.calls-btn-danger { background: var(--calls-danger); }
+.calls-btn-danger:hover { background: var(--calls-danger-hover); }
+.calls-btn-success { background: var(--calls-success); }
+.calls-btn-success:hover { background: var(--calls-success-hover); }
+
+.calls-btn > span { display: inline-flex; }
+.calls-btn > span[hidden] { display: none; }
+
+.calls-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+}
+
+.calls-pulse { animation: calls-pulse 1.5s ease-out infinite; }
+
+@keyframes calls-pulse {
+    0% { box-shadow: 0 0 0 0 rgb(34 197 94 / 0.6); }
+    100% { box-shadow: 0 0 0 0.75rem rgb(34 197 94 / 0); }
+}
+
+.calls-window { width: min(var(--calls-width), calc(100vw - 2rem)); }
+
+.calls-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem 0.5rem;
+}
+
+.calls-stage {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background: var(--calls-stage);
+}
+
+.calls-remote {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+/* One tile per other participant: a single one fills the stage, two to four share a 2x2 grid. */
+.calls-grid {
+    display: grid;
+    width: 100%;
+    height: 100%;
+    gap: 2px;
+    grid-template-columns: 1fr;
+}
+
+.calls-grid[data-count="2"],
+.calls-grid[data-count="3"],
+.calls-grid[data-count="4"] { grid-template-columns: 1fr 1fr; }
+
+.calls-grid[data-count="2"] { grid-template-rows: 1fr; }
+
+.calls-tile {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--calls-tile);
+}
+
+.calls-grid[data-count="2"] .calls-avatar-lg,
+.calls-grid[data-count="3"] .calls-avatar-lg,
+.calls-grid[data-count="4"] .calls-avatar-lg {
+    width: 3rem;
+    height: 3rem;
+    font-size: 1rem;
+}
+
+/* A shared screen has the stage: its tile is the spotlight, shown whole, and the cameras
+   line up in a strip on top (a tall stage) or on the right (a wide one). */
+.calls-stage[data-spotlight] .calls-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+}
+
+.calls-stage[data-spotlight][data-strip="top"] .calls-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: max(5.25rem, 22%) minmax(0, 1fr);
+}
+
+.calls-stage[data-spotlight][data-strip="right"] .calls-grid {
+    grid-template-columns: minmax(0, 1fr) max(7rem, 22%);
+    grid-template-rows: repeat(3, minmax(0, 1fr));
+}
+
+.calls-tile[data-role="spotlight"] { grid-area: 1 / 1 / -1 / -1; background: var(--calls-stage); }
+.calls-stage[data-strip="top"] .calls-tile[data-role="spotlight"] { grid-area: 2 / 1 / 3 / -1; }
+.calls-stage[data-strip="right"] .calls-tile[data-role="spotlight"] { grid-area: 1 / 1 / -1 / 2; }
+.calls-stage[data-strip="top"] .calls-tile[data-role="strip"] { grid-row: 1; }
+.calls-stage[data-strip="right"] .calls-tile[data-role="strip"] { grid-column: 2; }
+
+.calls-tile[data-role="spotlight"] .calls-remote { object-fit: contain; }
+.calls-tile[data-role="strip"] .calls-avatar-lg { width: 2.25rem; height: 2.25rem; font-size: 0.875rem; }
+.calls-tile[data-role="strip"] .calls-tile-name { left: 0.25rem; bottom: 0.25rem; padding: 0.1rem 0.4rem; font-size: 0.625rem; }
+.calls-tile[data-role="strip"] .calls-badges { display: none; }
+
+.calls-stage[data-spotlight] .calls-local { width: 18%; }
+.calls-stage[data-strip="right"] .calls-local { right: auto; left: 0.5rem; }
+
+.calls-tile-name {
+    position: absolute;
+    left: 0.5rem;
+    bottom: 0.5rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.375rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+    background: rgb(24 24 27 / 0.75);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    backdrop-filter: blur(4px);
+    pointer-events: none;
+}
+
+.calls-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.calls-local {
+    position: absolute;
+    right: 0.5rem;
+    bottom: 0.5rem;
+    width: 28%;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+    border-radius: 0.5rem;
+    background: var(--calls-control);
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+}
+
+.calls-mirror { transform: scaleX(-1); }
+.calls-hidden { display: none; }
+
+.calls-badges {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    pointer-events: none;
+}
+
+.calls-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 9999px;
+    background: rgb(24 24 27 / 0.75);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    backdrop-filter: blur(4px);
+}
+
+.calls-badge .calls-icon { width: 0.875rem; height: 0.875rem; }
+
+.calls-notice {
+    padding: 0.625rem 1rem;
+    font-size: 0.8125rem;
+}
+
+.calls [hidden] { display: none !important; }
+
+@media (max-width: 640px) {
+    .calls { inset-inline: 1rem; align-items: stretch; }
+    .calls-incoming { min-width: 0; }
+    .calls-window { width: auto; }
+}
+
+/* The pop-out page: the widget is the whole window. */
+.calls-popup {
+    position: static;
+    align-items: stretch;
+    height: 100vh;
+    height: 100dvh;
+    padding: 0;
+}
+
+.calls-popup .calls-slot-window { display: contents; }
+
+.calls-popup .calls-window {
+    width: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-radius: 0;
+}
+
+.calls-popup .calls-stage {
+    flex: 1;
+    /* The videos must not grow the stage past the window: it shrinks to what is left. */
+    min-height: 0;
+    overflow: hidden;
+    aspect-ratio: auto;
+}
+
+.calls-popup .calls-incoming,
+.calls-popup .calls-notice { margin: 1rem; }

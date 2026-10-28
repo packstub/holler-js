@@ -1,8 +1,8 @@
 /**
  * Test doubles for the engine: the WebRTC and media globals a browser would
  * provide, and an in-memory signaling server that follows the same rules as
- * the HTTP backend (one window holds a side, signals flow only to the holder,
- * a cursor so nothing is missed or repeated).
+ * the HTTP backend (one window holds a participant's side, signals flow only to
+ * the holder, a cursor so nothing is missed or repeated, a seat per participant).
  */
 
 import { vi } from 'vitest'
@@ -162,11 +162,16 @@ export function installBrowserGlobals(devices = fakeDevices()) {
     return devices
 }
 
+const fail = (message, status) => Object.assign(new Error(message), { status })
+const LIVE = ['ringing', 'joined']
+
 /**
  * The signaling backend in memory. `clientFor(userId)` hands out an object with
  * the signaling interface for that user, the way HttpSignaling would for a
- * signed-in browser. State is inspectable and can be pushed around by a test
- * (end a call, make a side go quiet).
+ * signed-in browser. A call has a participant per person (the caller joined from
+ * the start at seat 0, every invitee ringing at the next seat); it ends when
+ * fewer than two people are left in it. State is inspectable and can be pushed
+ * around by a test (end a call, make a side go quiet).
  */
 export class FakeServer {
     constructor({ holdSeconds = 5 } = {}) {
@@ -186,30 +191,40 @@ export class FakeServer {
         return this
     }
 
+    /** A person's record on a call: { user_id, seat, status, tab, seen_at }. */
+    participant(callId, userId) {
+        return this.calls.get(Number(callId))?.participants.find((p) => p.user_id === userId) ?? null
+    }
+
     clientFor(userId) {
         const server = this
+        const me = (found) => found.participants.find((p) => p.user_id === userId) ?? null
         const call = (id) => {
             const found = server.calls.get(Number(id))
-            if (! found) throw Object.assign(new Error('Not found'), { status: 404 })
-            if (found.caller_id !== userId && found.callee_id !== userId) throw Object.assign(new Error('Forbidden'), { status: 403 })
+            if (! found) throw fail('Not found', 404)
+            if (! me(found)) throw fail('Forbidden', 403)
             return found
         }
+        const busy = (user) => [...server.calls.values()].some((c) => c.status !== 'ended' && c.participants.some((p) => p.user_id === user && LIVE.includes(p.status)))
+        const liveCallsOf = (user) => [...server.calls.values()].filter((c) => c.status !== 'ended' && c.participants.some((p) => p.user_id === user && LIVE.includes(p.status)))
 
         return {
-            async start(callee, tab) {
-                server.log.push([userId, 'start', callee, tab])
-                const busy = [...server.calls.values()].some((c) => c.status !== 'ended' && (c.caller_id === callee || c.callee_id === callee))
-                if (callee === userId || ! callee) throw Object.assign(new Error('This person cannot be called.'), { status: 422 })
+            async start(callees, tab) {
+                server.log.push([userId, 'start', callees, tab])
+                const list = [].concat(callees ?? [])
+                if (! list.length || list.includes(userId)) throw fail('This person cannot be called.', 422)
+                const anyBusy = list.some(busy)
 
-                for (const open of server.calls.values()) {
-                    if (open.status !== 'ended' && (open.caller_id === userId || open.callee_id === userId)) server.end(open.id, 'cancelled')
-                }
+                for (const open of liveCallsOf(userId)) server.withdraw(open, me(open))
 
-                if (busy) throw Object.assign(new Error('This person is on another call.'), { status: 409 })
+                if (anyBusy) throw fail('This person is on another call.', 409)
 
                 const created = {
-                    id: server.nextCallId++, caller_id: userId, callee_id: callee, status: 'ringing', end_reason: null, answered_at: null,
-                    caller_tab: tab ?? null, callee_tab: null, caller_seen_at: tab ? server.now : null, callee_seen_at: null,
+                    id: server.nextCallId++, caller_id: userId, status: 'ringing', end_reason: null, answered_at: null,
+                    participants: [
+                        { user_id: userId, seat: 0, status: 'joined', tab: tab ?? null, seen_at: tab ? server.now : null },
+                        ...list.map((id, index) => ({ user_id: id, seat: index + 1, status: 'ringing', tab: null, seen_at: null })),
+                    ],
                 }
                 server.calls.set(created.id, created)
 
@@ -219,8 +234,10 @@ export class FakeServer {
             async answer(callId, tab) {
                 server.log.push([userId, 'answer', callId, tab])
                 const found = call(callId)
-                if (found.callee_id !== userId || found.status !== 'ringing') throw Object.assign(new Error('This call is no longer ringing.'), { status: 409 })
-                Object.assign(found, { status: 'active', answered_at: new Date(2026, 0, 1).toISOString(), callee_tab: tab ?? null, callee_seen_at: tab ? server.now : null })
+                const mine = me(found)
+                if (found.status === 'ended' || mine.status !== 'ringing') throw fail('This call is no longer ringing.', 409)
+                Object.assign(mine, { status: 'joined', tab: tab ?? null, seen_at: tab ? server.now : null })
+                if (found.status === 'ringing') Object.assign(found, { status: 'active', answered_at: new Date(2026, 0, 1).toISOString() })
 
                 return server.present(found, userId, tab)
             },
@@ -228,7 +245,7 @@ export class FakeServer {
             async decline(callId) {
                 server.log.push([userId, 'decline', callId])
                 const found = call(callId)
-                server.end(found.id, found.callee_id === userId ? 'declined' : 'cancelled')
+                server.withdraw(found, me(found))
 
                 return server.present(found, userId)
             },
@@ -236,79 +253,127 @@ export class FakeServer {
             async hangup(callId) {
                 server.log.push([userId, 'hangup', callId])
                 const found = call(callId)
-                server.end(found.id, found.status === 'ringing' ? (found.caller_id === userId ? 'cancelled' : 'declined') : 'hung_up')
+                server.withdraw(found, me(found))
 
                 return server.present(found, userId)
             },
 
-            async send(callId, type, payload) {
-                server.log.push([userId, 'send', callId, type])
+            async invite(callId, callee) {
+                server.log.push([userId, 'invite', callId, callee])
                 const found = call(callId)
-                if (found.status === 'ended') throw Object.assign(new Error('This call has ended.'), { status: 410 })
-                const signal = { id: server.nextSignalId++, call: found.id, to_user_id: found.caller_id === userId ? found.callee_id : found.caller_id, type, payload }
-                server.signals.push(signal)
+                if (found.status === 'ended') throw fail('This call has ended.', 410)
+                if (me(found).status !== 'joined') throw fail('Join the call before adding people to it.', 409)
+                const existing = found.participants.find((p) => p.user_id === callee)
+                if (! callee || callee === userId || (existing && LIVE.includes(existing.status))) throw fail('This person cannot be called.', 422)
+                if (busy(callee)) throw fail('This person is on another call.', 409)
 
-                return { id: signal.id }
+                const seat = Math.max(...found.participants.map((p) => p.seat)) + 1
+                if (existing) Object.assign(existing, { seat, status: 'ringing', tab: null, seen_at: null })
+                else found.participants.push({ user_id: callee, seat, status: 'ringing', tab: null, seen_at: null })
+
+                return server.present(found, userId)
+            },
+
+            async send(callId, type, payload, to = null) {
+                server.log.push([userId, 'send', callId, type, to])
+                const found = call(callId)
+                if (found.status === 'ended') throw fail('This call has ended.', 410)
+                const recipients = found.participants.filter((p) => p.user_id !== userId && LIVE.includes(p.status) && (to === null || String(p.user_id) === String(to)))
+                let last = null
+                for (const recipient of recipients) {
+                    last = { id: server.nextSignalId++, call: found.id, to_user_id: recipient.user_id, from: userId, type, payload }
+                    server.signals.push(last)
+                }
+
+                return { id: last?.id ?? null }
             },
 
             leave(callId, tab) {
                 server.log.push([userId, 'leave', callId, tab])
                 const found = server.calls.get(Number(callId))
-                if (! found) return
-                const side = found.caller_id === userId ? 'caller' : 'callee'
-                if (found[`${side}_tab`] === tab) found[`${side}_tab`] = null
+                const mine = found ? me(found) : null
+                if (mine && mine.tab === tab) mine.tab = null
             },
 
             async poll({ after = 0, call: currentId = null, tab = null, hold = false } = {}) {
                 server.log.push([userId, 'poll', currentId, tab, hold])
-                const mine = [...server.calls.values()].filter((c) => c.status !== 'ended' && (c.caller_id === userId || c.callee_id === userId)).sort((a, b) => b.id - a.id)
+                const mine = liveCallsOf(userId).sort((a, b) => b.id - a.id)
 
-                let current = currentId ? server.calls.get(Number(currentId)) ?? null : (mine.find((c) => c.status === 'active' || c.caller_id === userId) ?? null)
-                if (current && current.caller_id !== userId && current.callee_id !== userId) current = null
+                let current = currentId ? server.calls.get(Number(currentId)) ?? null : (mine.find((c) => me(c).status === 'joined') ?? null)
+                // Not mine, or no longer mine (I left a call that goes on); an ended call is still shown, for its reason.
+                if (current && (! me(current) || (current.status !== 'ended' && ! LIVE.includes(me(current).status)))) current = null
 
                 let held = false
                 if (current && currentId && tab && hold && current.status !== 'ended') {
-                    const side = current.caller_id === userId ? 'caller' : 'callee'
-                    const previous = current[`${side}_tab`]
-                    const stale = current[`${side}_seen_at`] !== null && server.now - current[`${side}_seen_at`] > server.holdSeconds
-                    if (previous === null || previous === tab || stale) {
-                        const reclaimed = current[`${side}_seen_at`] !== null && previous !== tab
-                        current[`${side}_tab`] = tab
-                        current[`${side}_seen_at`] = server.now
+                    const side = me(current)
+                    const previous = side.tab
+                    const stale = side.seen_at !== null && server.now - side.seen_at > server.holdSeconds
+                    if (LIVE.includes(side.status) && (previous === null || previous === tab || stale)) {
+                        const reclaimed = side.seen_at !== null && previous !== tab
+                        side.tab = tab
+                        side.seen_at = server.now
                         held = true
                         if (reclaimed) after = Math.max(after, server.signals.at(-1)?.id ?? 0)
                     }
                 }
 
-                const incoming = mine.find((c) => c.status === 'ringing' && c.callee_id === userId && c !== current) ?? null
+                const incoming = mine.find((c) => me(c).status === 'ringing' && c !== current) ?? null
                 const signals = held ? server.signals.filter((s) => s.to_user_id === userId && s.call === current.id && s.id > after) : []
 
                 return {
                     call: current ? server.present(current, userId, tab) : null,
                     incoming: incoming ? server.present(incoming, userId, tab) : null,
-                    signals: signals.map(({ id, call: callId, type, payload }) => ({ id, call: callId, type, payload })),
+                    signals: signals.map(({ id, call: callId, type, payload, from }) => ({ id, call: callId, type, payload, from })),
                     cursor: signals.length ? signals.at(-1).id : after,
                 }
             },
         }
     }
 
+    /**
+     * A participant is gone: left (or declined), or `missed` / `dropped` as the Laravel
+     * server's expiry marks them; the call ends once fewer than two people are left in it.
+     */
+    withdraw(found, mine, status = null) {
+        if (found.status === 'ended' || ! LIVE.includes(mine.status)) return
+        mine.status = status ?? (mine.status === 'joined' ? 'left' : 'declined')
+        mine.tab = null
+
+        const live = found.participants.filter((p) => LIVE.includes(p.status))
+        const joined = live.filter((p) => p.status === 'joined')
+
+        // The caller gives up before anyone joined: everyone's ring stops.
+        if (found.status === 'ringing' && mine.user_id === found.caller_id) return this.end(found.id, 'cancelled')
+        if (live.length < 2 || joined.length === 0) {
+            this.end(found.id, found.status === 'active' ? (mine.status === 'dropped' ? 'dropped' : 'hung_up') : (mine.status === 'missed' ? 'missed' : 'declined'))
+        }
+    }
+
     present(found, me, tab = null) {
-        const side = found.caller_id === me ? 'caller' : 'callee'
-        const peerSide = side === 'caller' ? 'callee' : 'caller'
-        const peerId = found[`${peerSide}_id`]
-        const isHeld = (which) => found[`${which}_tab`] !== null && found[`${which}_seen_at`] !== null && this.now - found[`${which}_seen_at`] <= this.holdSeconds
+        const mine = found.participants.find((p) => p.user_id === me)
+        const isHeld = (p) => p.tab !== null && p.seen_at !== null && this.now - p.seen_at <= this.holdSeconds
+        const peers = found.participants
+            .filter((p) => p.user_id !== me)
+            .sort((a, b) => a.seat - b.seat)
+            .map((p) => ({
+                id: p.user_id, name: this.names[p.user_id] ?? p.user_id, avatar: null, seat: p.seat, status: p.status,
+                held: isHeld(p), seen_ago: p.seen_at === null ? null : this.now - p.seen_at,
+            }))
+        const first = peers.find((p) => LIVE.includes(p.status)) ?? peers[0] ?? null
 
         return {
             id: found.id,
             status: found.status,
             end_reason: found.end_reason,
-            role: side,
-            peer: { id: peerId, name: this.names[peerId] ?? peerId, avatar: null },
+            role: found.caller_id === me ? 'caller' : 'callee',
+            seat: mine.seat,
+            joined: mine.status === 'joined',
             answered_at: found.answered_at,
-            held: isHeld(side) && found[`${side}_tab`] !== tab,
-            peer_held: isHeld(peerSide),
-            peer_seen_ago: found[`${peerSide}_seen_at`] === null ? null : this.now - found[`${peerSide}_seen_at`],
+            held: isHeld(mine) && mine.tab !== tab,
+            peers,
+            peer: first ? { id: first.id, name: first.name, avatar: first.avatar } : null,
+            peer_held: first?.held ?? false,
+            peer_seen_ago: first?.seen_ago ?? null,
         }
     }
 

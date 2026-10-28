@@ -106,8 +106,9 @@ export class HttpSignaling {
         this.kind = kind
         this.fetch = fetchFn || ((...args) => globalThis.fetch(...args))
 
-        // Only a backend with the route can add people to a call.
+        // Only a backend with the route can add people to a call, or hand out ICE servers per call.
         if (! routes?.invite) this.invite = undefined
+        if (! routes?.ice) this.configuration = undefined
     }
 
     url(name, callId) {
@@ -139,6 +140,9 @@ export class HttpSignaling {
     start(callees, tab) {
         return this.request('POST', this.routes.store, Array.isArray(callees) ? { callees, tab } : { callee: callees, tab })
     }
+
+    /** What the browsers connect through, asked when a call starts (route `ice`): `{ iceServers, iceTransportPolicy }`. */
+    configuration() { return this.request('GET', this.routes.ice) }
 
     answer(callId, tab) { return this.request('POST', this.url('answer', callId), { tab }) }
     decline(callId) { return this.request('POST', this.url('decline', callId)) }
@@ -522,7 +526,7 @@ export class CallClient extends EventTarget {
     /**
      * @param {object} options
      * @param {HttpSignaling} options.signaling
-     * @param {RTCIceServer[]} [options.iceServers]
+     * @param {RTCIceServer[]|(() => Promise<RTCIceServer[]>|RTCIceServer[])} [options.iceServers]  or a function asked each time a call starts (short-lived TURN credentials); `'signaling'` asks the signaling's `configuration()`
      * @param {boolean} [options.video]  start calls with the camera on
      * @param {{ idle: number, active: number }} [options.poll]  milliseconds between polls
      * @param {number} [options.reconnectTimeout]  milliseconds to wait for the other side before giving up
@@ -537,7 +541,8 @@ export class CallClient extends EventTarget {
     constructor({ signaling, iceServers = [], video = true, poll = {}, reconnectTimeout = 15000, resumes = true, maxParticipants = 4, topology = null, getUserMedia, iceTransportPolicy = 'all', media = null, channels = [] } = {}) {
         super()
         this.signaling = signaling
-        this.iceServers = iceServers
+        this.iceServersOption = iceServers
+        this.iceServers = Array.isArray(iceServers) ? iceServers : []
         this.iceTransportPolicy = iceTransportPolicy === 'relay' ? 'relay' : 'all'
         this.video = video
         this.media = media ?? (video ? 'video' : 'audio')
@@ -787,6 +792,8 @@ export class CallClient extends EventTarget {
             throw error
         }
 
+        await this.loadIceServers()
+
         let call
         try {
             call = await this.signaling.start(users, this.tab)
@@ -833,6 +840,8 @@ export class CallClient extends EventTarget {
             await this.decline()
             throw error
         }
+
+        await this.loadIceServers()
 
         // The caller gave up (or the call was declined elsewhere) while the prompt was open.
         if (epoch !== this.epoch || this.call?.id !== callId) {
@@ -956,6 +965,7 @@ export class CallClient extends EventTarget {
             return
         }
 
+        await this.loadIceServers()
         if (epoch !== this.epoch || this.call?.id !== call.id) return
 
         this.setState(call.status === 'ringing' ? 'calling' : 'connecting')
@@ -1280,6 +1290,25 @@ export class CallClient extends EventTarget {
     }
 
     // ---- internals -----------------------------------------------------------
+
+    /** The ICE servers for the call about to start, when they come from a function or the server; the last ones stay on failure. */
+    async loadIceServers() {
+        const option = this.iceServersOption
+        if (Array.isArray(option) || ! option) return
+
+        try {
+            if (option === 'signaling') {
+                const configuration = await this.signaling.configuration?.()
+                if (Array.isArray(configuration?.iceServers)) this.iceServers = configuration.iceServers
+                if (configuration?.iceTransportPolicy) this.iceTransportPolicy = configuration.iceTransportPolicy === 'relay' ? 'relay' : 'all'
+            } else if (typeof option === 'function') {
+                const servers = await option()
+                if (Array.isArray(servers)) this.iceServers = servers
+            }
+        } catch (error) {
+            this.emit('error', { error })
+        }
+    }
 
     acquireMedia() {
         if (this.cameraStream || this.media === 'none') return Promise.resolve(this.cameraStream)

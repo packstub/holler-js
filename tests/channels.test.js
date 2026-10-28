@@ -138,3 +138,21 @@ describe('drain', () => {
         expect(done).toBe(true)
     })
 })
+
+describe('ICE servers per call', () => {
+    it('asks the signaling when a call starts, and a function each time', async () => {
+        let n = 0
+        const signaling = { ...server.clientFor('agent'), configuration: vi.fn(async () => ({ iceServers: [{ urls: `turn:t${++n}` }], iceTransportPolicy: 'relay' })) }
+        const caller = new CallClient({ signaling, iceServers: 'signaling', poll: { idle: 100, active: 50 } })
+        caller.start()
+        await caller.callUser('guest:1')
+
+        expect(caller.pc.configuration).toEqual({ iceServers: [{ urls: 'turn:t1' }], iceTransportPolicy: 'relay' })
+
+        const viaFunction = new CallClient({ signaling: server.clientFor('guest:1'), iceServers: async () => [{ urls: 'turn:fn' }], poll: { idle: 100, active: 50 } })
+        viaFunction.start()
+        await settle(200)
+        await viaFunction.accept()
+        expect(viaFunction.pc.configuration.iceServers).toEqual([{ urls: 'turn:fn' }])
+    })
+})

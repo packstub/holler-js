@@ -15,11 +15,15 @@ npm run test:watch
 - `tests/fakes.js`: `FakeRTCPeerConnection` (fires `negotiationneeded` once per task like a browser, `setConnectionState` / `receiveTrack` / `gatherCandidate` for what the network would do), `FakeMediaStream`, `FakeTrack` (`end()` is the browser's "Stop sharing"), `fakeDevices()` for `getUserMedia` / `getDisplayMedia`, `installBrowserGlobals()`, and `FakeServer`: the signaling backend in memory with the same rules as the Laravel one, extended to groups (a participant per person with a `seat`, a side held by one tab, signals only to the holder and addressed with `to`, a cursor, `invite`, a call that ends once fewer than two people are left; `end()` and `tick()` push state around, `participant(callId, userId)` reads a record, `server.log` records every call).
 - `tests/call-client.test.js`: two clients talk through a `FakeServer` under `vi.useFakeTimers()`; `connect()` gets a call to `active`, `settle(ms)` advances the timers.
 - `tests/widget.test.js`: `CallWidget` under jsdom over a `FakeServer` (`// @vitest-environment jsdom`); several widgets share one document, so all but one get `callSelector: null`.
-- `tests/widget.test.js`: `CallWidget` under jsdom over a `FakeServer` (`// @vitest-environment jsdom`); several widgets share one document, so all but one get `callSelector: null`.
 - `tests/group-calls.test.js`: three clients in a mesh (`group()`), a recording topology that checks the interface, and a 1-on-1 backend that strips `peers`, `seat`, `joined` and `from`.
 
 ## Conventions
 
 - The signaling interface and the `call` shape in the README are shared with `packstub/calls` and `filament-calls`; a change there is a change in all three repos and in `FakeServer`. The group fields (`peers`, `seat`, `joined`, `from`, `to`, `invite`) are optional on the wire: the client must keep working against a backend that sends none of them.
 - During ICE (between the answer and `connected`) polls already report `reconnecting`; tests assert the first states and the final one, not the exact sequence.
+- `exports` in `package.json` (`.`, `./widget`, `./widget.css`) must cover every import path the README shows; `sideEffects` keeps the CSS; check with `npm pack --dry-run`.
 - Changelog line for every change (`## Unreleased`), the tag is `v<version>` on `main`, the release workflow takes the notes from the tag's section.
+
+## Release checklist
+
+1.0.0 goes out first, before `packstub/calls` and `packstub/filament-calls`: make the repo public, set `"version": "1.0.0"`, rename `## Unreleased` to `## 1.0.0 — <date>`, `npm pack --dry-run`, `npm publish`, tag `v1.0.0`. The full order across the three repos is in `plugins/filament-calls/AGENTS.md`, section Release checklist. Agents never tag, publish or change visibility.

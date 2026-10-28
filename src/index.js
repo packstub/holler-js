@@ -425,7 +425,7 @@ class Link {
  * media, and each participant uploads one copy per peer, which is fine up to about
  * four people. The default topology.
  *
- * The topology interface, for an SFU or a relay (every method but `connect`,
+ * The topology interface, for an SFU or a relay (every method but `attach`, `connect`,
  * `disconnect`, `signal`, `connected` and `leave` is optional):
  *   attach(client)                        once per call, before anything else
  *   join(call)                            I am in the call (open an uplink, say)

@@ -1,15 +1,19 @@
 {
     "name": "@packstub/calls",
     "version": "0.1.0",
-    "description": "WebRTC calls (audio, video, screen share), 1-on-1 and small groups over a mesh, with a pluggable signaling backend and a pluggable topology. Framework-agnostic; the engine behind packstub/calls and packstub/filament-calls.",
+    "description": "WebRTC calls (audio, video, screen share), 1-on-1 and small groups over a mesh, with a pluggable signaling backend and topology, plus a ready-made call widget. Framework-agnostic; the engine behind packstub/calls and packstub/filament-calls.",
     "type": "module",
     "main": "src/index.js",
     "module": "src/index.js",
     "exports": {
-        ".": "./src/index.js"
+        ".": "./src/index.js",
+        "./widget": "./src/widget.js",
+        "./widget.css": "./src/widget.css",
+        "./package.json": "./package.json"
     },
     "files": [
-        "src"
+        "src",
+        "CHANGELOG.md"
     ],
     "keywords": [
         "webrtc",
@@ -20,7 +24,8 @@
         "group-call",
         "mesh",
         "signaling",
-        "perfect-negotiation"
+        "perfect-negotiation",
+        "widget"
     ],
     "repository": {
         "type": "git",
@@ -30,9 +35,14 @@
     "bugs": "https://github.com/packstub/calls-js/issues",
     "author": "Ion Caliman <icaliman92@gmail.com>",
     "license": "MIT",
-    "sideEffects": false,
+    "sideEffects": [
+        "*.css"
+    ],
     "engines": {
         "node": ">=20"
+    },
+    "publishConfig": {
+        "access": "public"
     },
     "scripts": {
         "test": "vitest run",

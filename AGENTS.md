@@ -22,7 +22,7 @@ npm run test:watch
 - The signaling interface and the `call` shape in the README are shared with `packstub/calls` and `filament-calls`; a change there is a change in all three repos and in `FakeServer`. The group fields (`peers`, `seat`, `joined`, `from`, `to`, `invite`) are optional on the wire: the client must keep working against a backend that sends none of them.
 - During ICE (between the answer and `connected`) polls already report `reconnecting`; tests assert the first states and the final one, not the exact sequence.
 - `exports` in `package.json` (`.`, `./widget`, `./widget.css`) must cover every import path the README shows; `sideEffects` keeps the CSS; check with `npm pack --dry-run`.
-- Changelog line for every change (`## Unreleased`), the tag is `v<version>` on `main`, the release workflow takes the notes from the tag's section.
+- Changelog line for every change (`## Unreleased`), the tag is `v<version>` on `main`, the release workflow takes the notes from the tag's section. Keep the section short and human, since the workflow appends GitHub's list of merged pull requests under it: an optional lead sentence, then at most about six one-line bullets saying what a user gets, in plain words (class or method names only when a user needs the name, never lists of them). Always keep breaking changes with an `**Upgrading:**` line, security or privacy fixes, new minimum versions and migrations to run; CI, tests and refactors stay out.
 
 ## Release checklist
 

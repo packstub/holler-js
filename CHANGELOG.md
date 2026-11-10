@@ -21,3 +21,4 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - A pop-out reloaded mid-call continues the right call when an earlier call's id started with the same digits
 - A call recovers from a network change (Wi-Fi to mobile data): ICE restarts after 3 seconds disconnected instead of waiting for the browser to call the connection failed
 - `escape()` is exported from the widget module for templates of your own, and the README says which values come from the server
+- Each call starts with the media the options ask for, also after the previous call turned the microphone or camera on with `startMedia()`

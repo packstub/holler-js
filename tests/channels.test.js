@@ -125,6 +125,14 @@ describe('media started mid-call', () => {
         expect(agent.localStream).toBeNull()
     })
 
+    it('starts the next call the way the options say, not with the media the last call added', async () => {
+        const { agent } = await assist()
+        await agent.startMedia('audio')
+        await agent.hangUp()
+
+        expect(agent.media).toBe('none')
+    })
+
     it('asks again after a refused prompt instead of keeping the old media', async () => {
         const { agent } = await assist()
         await agent.startMedia('audio')

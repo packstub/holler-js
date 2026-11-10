@@ -577,6 +577,8 @@ export class CallClient extends EventTarget {
         this.iceTransportPolicy = iceTransportPolicy === 'relay' ? 'relay' : 'all'
         this.video = video
         this.media = media ?? (video ? 'video' : 'audio')
+        // What every call starts with; `startMedia()` raises `media` for the call it runs in.
+        this.startingMedia = this.media
         this.channelLabels = [...channels]
         // Without a track or a channel nothing would ever start the connection.
         if (this.media === 'none' && ! this.channelLabels.length) throw new Error("media: 'none' needs at least one data channel in `channels`.")
@@ -1315,8 +1317,10 @@ export class CallClient extends EventTarget {
             stream = await this.acquireMedia()
         } catch (error) {
             // Nothing changed: the next startMedia() asks again.
-            this.cameraStream = previous
-            this.media = previousMedia
+            if (epoch === this.epoch) {
+                this.cameraStream = previous
+                this.media = previousMedia
+            }
             this.emit('error', { error, media: true })
             throw error
         }
@@ -1514,6 +1518,7 @@ export class CallClient extends EventTarget {
         this.roster.clear()
         this.buffered = []
         this.resumeId = null
+        this.media = this.startingMedia
         this.setState('idle')
     }
 

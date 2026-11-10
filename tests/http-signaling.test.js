@@ -69,6 +69,20 @@ describe('HttpSignaling', () => {
         await expect(signaling.poll()).rejects.toMatchObject({ message: 'GET /calls/poll?after=0 failed (500)', status: 500 })
     })
 
+    it('refuses a page in place of JSON (a login form behind a redirect), so it never reads as "no call"', async () => {
+        fetchFn.mockResolvedValueOnce(new Response('<!doctype html><form>Sign in</form>', { status: 200, headers: { 'Content-Type': 'text/html' } }))
+
+        await expect(signaling.poll()).rejects.toMatchObject({ status: 200, reason: 'invalid_response' })
+    })
+
+    it('takes an empty successful answer as an empty object', async () => {
+        fetchFn.mockResolvedValueOnce(new Response(null, { status: 204 }))
+        fetchFn.mockResolvedValueOnce(new Response(JSON.stringify({ id: 3 }), { status: 201 }))
+
+        await expect(signaling.send(1, 'ice', {})).resolves.toEqual({})
+        await expect(signaling.send(1, 'ice', {})).resolves.toEqual({ id: 3 })
+    })
+
     it('leaves with a beacon carrying the tab and the extra form fields', () => {
         const sendBeacon = vi.fn(() => true)
         vi.stubGlobal('navigator', { sendBeacon })

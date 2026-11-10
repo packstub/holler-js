@@ -124,13 +124,30 @@ export class HttpSignaling {
             signal: this.timeout && typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(this.timeout) : undefined,
         })
 
-        const data = await response.json().catch(() => ({}))
+        let data = {}
+        let parsed = true
+        try {
+            if (typeof response.text === 'function') {
+                const text = await response.text()
+                if (text.trim() !== '') data = JSON.parse(text) ?? {}
+            } else {
+                data = (await response.json()) ?? {}
+            }
+        } catch {
+            parsed = false
+        }
 
         if (! response.ok) {
             const error = new Error(data.message || `${method} ${url} failed (${response.status})`)
             error.status = response.status
             error.reason = data.reason ?? null
             throw error
+        }
+
+        // A page instead of JSON (a login form behind a redirect, a proxy's error page): read as
+        // "no call", it would end the call this window is on.
+        if (! parsed) {
+            throw Object.assign(new Error(`${method} ${url} did not answer with JSON (${response.status})`), { status: response.status, reason: 'invalid_response' })
         }
 
         return data

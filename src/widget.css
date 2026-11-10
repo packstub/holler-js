@@ -170,6 +170,23 @@
 
 .calls-pulse { animation: calls-pulse 1.5s ease-out infinite; }
 
+@media (prefers-reduced-motion: reduce) {
+    .calls-pulse { animation: none; }
+}
+
+/* Read by screen readers, never seen. */
+.calls-live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 @keyframes calls-pulse {
     0% { box-shadow: 0 0 0 0 rgb(34 197 94 / 0.6); }
     100% { box-shadow: 0 0 0 0.75rem rgb(34 197 94 / 0); }

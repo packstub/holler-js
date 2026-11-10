@@ -100,7 +100,7 @@ const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ({ '&'
  */
 export const templates = {
     incoming: (v) => `
-        <div class="calls-card calls-incoming" role="alertdialog" data-calls-scope>
+        <div class="calls-card calls-incoming" role="alertdialog" data-calls-scope data-calls-attr="aria-label:incomingLabel">
             <div class="calls-person">
                 <img class="calls-avatar" alt="" data-calls-src="peerAvatar" data-calls-show="hasAvatar">
                 <span class="calls-avatar calls-avatar-initials" data-calls-text="initials" data-calls-show="!hasAvatar"></span>
@@ -110,8 +110,8 @@ export const templates = {
                 </div>
             </div>
             <div class="calls-actions">
-                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="decline" title="${escape(v.labels.decline)}">${v.icons.phoneX}</button>
-                <button type="button" class="calls-btn calls-btn-success calls-pulse" data-calls-action="accept" title="${escape(v.labels.accept)}">${v.icons.phone}</button>
+                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="decline" title="${escape(v.labels.decline)}" aria-label="${escape(v.labels.decline)}">${v.icons.phoneX}</button>
+                <button type="button" class="calls-btn calls-btn-success calls-pulse" data-calls-action="accept" title="${escape(v.labels.accept)}" aria-label="${escape(v.labels.accept)}">${v.icons.phone}</button>
             </div>
         </div>`,
 
@@ -124,26 +124,26 @@ export const templates = {
                     <span class="calls-dim" data-calls-text="status"></span>
                 </span>
             </button>
-            <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+            <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
         </div>`,
 
     window: (v) => `
-        <div class="calls-card calls-window" data-calls-scope>
+        <div class="calls-card calls-window" role="region" data-calls-scope data-calls-attr="aria-label:names">
             <div class="calls-header">
                 <div class="calls-name" data-calls-text="names"></div>
                 <div class="calls-dim" data-calls-text="status"></div>
             </div>
             <div class="calls-stage" data-calls-ref="stage" data-calls-attr="data-spotlight:spotlight data-strip:strip">
                 <div class="calls-grid" data-calls-ref="grid" data-calls-attr="data-count:count"></div>
-                <video autoplay playsinline muted class="calls-local" data-calls-video="localStream" data-calls-class="calls-mirror:mirror calls-hidden:hideLocal"></video>
+                <video autoplay playsinline muted class="calls-local" aria-label="${escape(v.labels.you)}" data-calls-video="localStream" data-calls-class="calls-mirror:mirror calls-hidden:hideLocal"></video>
             </div>
             <div class="calls-controls">
-                <button type="button" class="calls-btn" data-calls-action="toggleMute" data-calls-class="calls-btn-off:muted" data-calls-attr="title:muteTitle">${v.icons.microphone}</button>
-                <button type="button" class="calls-btn" data-calls-action="toggleCamera" data-calls-class="calls-btn-off:cameraOff" data-calls-attr="title:cameraTitle">
+                <button type="button" class="calls-btn" data-calls-action="toggleMute" data-calls-class="calls-btn-off:muted" data-calls-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
+                <button type="button" class="calls-btn" data-calls-action="toggleCamera" data-calls-class="calls-btn-off:cameraOff" data-calls-attr="title:cameraTitle aria-label:cameraTitle">
                     <span data-calls-show="!cameraOff">${v.icons.camera}</span><span data-calls-show="cameraOff">${v.icons.cameraOff}</span>
                 </button>
-                <button type="button" class="calls-btn" data-calls-action="toggleShare" data-calls-show="canShare" data-calls-class="calls-btn-on:sharing" data-calls-attr="title:shareTitle">${v.icons.screen}</button>
-                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+                <button type="button" class="calls-btn" data-calls-action="toggleShare" data-calls-show="canShare" data-calls-class="calls-btn-on:sharing" data-calls-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
+                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
             </div>
         </div>`,
 
@@ -166,7 +166,8 @@ export const templates = {
             </div>
         </div>`,
 
-    notice: () => '<div class="calls-card calls-notice" role="status" data-calls-scope data-calls-text="notice"></div>',
+    // Read out through the widget's live region, which is there before the text changes (a live region added with its text is often not read).
+    notice: () => '<div class="calls-card calls-notice" data-calls-scope data-calls-text="notice"></div>',
 }
 
 /**
@@ -447,6 +448,12 @@ export class CallWidget extends EventTarget {
             this.el.appendChild(slot)
             this.slots[name] = slot
         }
+        // What a screen reader says: notices, and who is calling.
+        this.live = document.createElement('div')
+        this.live.className = 'calls-live'
+        this.live.setAttribute('role', 'status')
+        this.live.setAttribute('aria-live', 'polite')
+        this.el.appendChild(this.live)
         this.el.addEventListener('click', (event) => {
             const button = event.target.closest('[data-calls-action]')
             if (button && this.el.contains(button)) this.act(button.getAttribute('data-calls-action'))
@@ -510,7 +517,11 @@ export class CallWidget extends EventTarget {
 
             this.render()
         })
-        this.on(client, 'incoming', ({ detail: { call } }) => { this.call = call; this.render() })
+        this.on(client, 'incoming', ({ detail: { call } }) => {
+            this.call = call
+            this.render()
+            this.announce(this.model().incomingLabel)
+        })
         this.on(client, 'update', ({ detail: { call } }) => {
             this.call = call
             // The chip's clock counts from the answer, not from the ringing.
@@ -657,9 +668,17 @@ export class CallWidget extends EventTarget {
 
     show(text) {
         this.notice = text
+        this.announce(text)
         clearTimeout(this.noticeTimer)
         this.noticeTimer = setTimeout(() => { this.notice = null; this.render() }, 4000)
         this.render()
+    }
+
+    /** Say this to a screen reader (the live region), without showing anything. */
+    announce(text) {
+        this.live.textContent = ''
+        // A new text node, even for the same words twice in a row, so it is read again.
+        setTimeout(() => { this.live.textContent = text }, 50)
     }
 
     // ---- the pop-out ---------------------------------------------------------
@@ -847,6 +866,7 @@ export class CallWidget extends EventTarget {
             notice: this.notice,
             // The incoming toast
             peerName: peer?.name ?? '',
+            incomingLabel: `${peer?.name ?? ''} ${this.labels.incoming}`.trim(),
             peerAvatar: peer?.avatar ?? null,
             hasAvatar: Boolean(safeUrl(peer?.avatar)),
             initials: this.initials(peer?.name),
@@ -895,6 +915,8 @@ export class CallWidget extends EventTarget {
     render() {
         this.peers = this.client.peers.map((peer) => ({ ...peer, hasVideo: (peer.stream?.getVideoTracks().length ?? 0) > 0 }))
         const model = this.model()
+        // A keyboard user who answered or hung up from a view that goes away keeps their place.
+        const focused = this.el.contains(document.activeElement) ? document.activeElement : null
 
         this.toggleView('incoming', this.state === 'ringing', model)
         this.toggleView('chip', this.state === 'elsewhere', model)
@@ -902,6 +924,15 @@ export class CallWidget extends EventTarget {
         this.toggleView('notice', Boolean(this.notice), model)
 
         if (this.views.window) this.renderTiles(model.spotlight)
+
+        if (focused && ! focused.isConnected) {
+            // The first control (mute, or the chip's open button), not hang up: an Enter too many must not end the call.
+            const next = (this.views.window ?? this.views.chip)?.querySelector('[data-calls-action]')
+            if (next) next.focus()
+            else if (this.focusBefore?.isConnected) this.focusBefore.focus()
+        }
+        // Where focus goes back to once the call is over: wherever it was before the widget showed up.
+        if (! this.el.contains(document.activeElement) && document.activeElement !== document.body) this.focusBefore = document.activeElement
     }
 
     toggleView(name, visible, model) {

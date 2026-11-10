@@ -62,7 +62,7 @@ describe('the widget', () => {
 
         expect(document.body.lastElementChild).toBe(ion.el)
         expect(ion.el.className).toBe('calls')
-        expect([...ion.el.children].every((slot) => slot.hidden)).toBe(true)
+        expect([...ion.el.querySelectorAll('.calls-slot')].every((slot) => slot.hidden)).toBe(true)
         expect(ion.state).toBe('idle')
     })
 
@@ -420,5 +420,50 @@ describe('avatars', () => {
             expect(img.getAttribute('src')).toBe(good)
         }
         expect(safeUrl(null)).toBeNull()
+    })
+})
+
+describe('accessibility', () => {
+    it('names the incoming call and every icon button, and reads the caller out', async () => {
+        const ion = widget('ion')
+        const ana = widget('ana', { callSelector: null })
+        await ion.callUser('ana')
+        await settle()
+
+        const toast = ana.views.incoming
+        expect(toast.getAttribute('role')).toBe('alertdialog')
+        expect(toast.getAttribute('aria-label')).toBe('Ion Caliman is calling you')
+        expect(ana.el.querySelector('.calls-live').textContent).toBe('Ion Caliman is calling you')
+        for (const button of ana.el.querySelectorAll('button')) expect(button.getAttribute('aria-label')).toBeTruthy()
+    })
+
+    it('keeps focus in the widget when Accept goes away, on the first call control rather than hang up', async () => {
+        const ion = widget('ion')
+        const ana = widget('ana', { callSelector: null })
+        await ion.callUser('ana')
+        await settle()
+
+        const accept = ana.el.querySelector('[data-calls-action="accept"]')
+        accept.focus()
+        accept.click()
+        await settle()
+
+        expect(document.activeElement.getAttribute('data-calls-action')).toBe('toggleMute')
+        expect(ana.views.window.getAttribute('aria-label')).toBe('Ion Caliman')
+
+        ana.el.querySelector('[data-calls-action="toggleMute"]').click()
+        expect(document.activeElement.getAttribute('aria-label')).toBe('Unmute')
+    })
+
+    it('reads notices out through a live region that is there before the text', async () => {
+        const ion = widget('ion')
+        const live = ion.el.querySelector('.calls-live')
+        expect(live.getAttribute('aria-live')).toBe('polite')
+
+        ion.show('Call ended')
+        await settle(100)
+
+        expect(live.textContent).toBe('Call ended')
+        expect(ion.views.notice.hasAttribute('role')).toBe(false)
     })
 })

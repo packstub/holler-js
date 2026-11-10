@@ -16,3 +16,4 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - A page returned in place of JSON (a login form behind a redirect) is an error, no longer read as "no call", which ended the call
 - After a page load mid-call, a browser that blocks sound until a click shows the video muted and turns the sound on with the first click, instead of a frozen tile
 - The widget only shows avatars from http(s), relative, `blob:` or `data:image/` URLs, and falls back to initials for anything else
+- Widget accessibility: every icon button has a name, the incoming call and notices are read out by screen readers, focus stays in the call after Accept, and the ringing pulse respects reduced motion

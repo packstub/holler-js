@@ -91,7 +91,8 @@ export const labels = {
     no_media: 'Could not access your camera or microphone.',
 }
 
-const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
+/** Text made safe to put into HTML: what a template of your own does with a name or anything else from the server. */
+export const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
 
 /**
  * The default markup. Each function gets the view model (`model()` or `tileModel()`,

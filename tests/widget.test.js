@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CallWidget, attachStream, patch, safeUrl, templates } from '../src/widget.js'
+import { CallWidget, attachStream, escape, patch, safeUrl, templates } from '../src/widget.js'
 import { FakeServer, FakeTrack, installBrowserGlobals } from './fakes.js'
 
 let server
@@ -490,5 +490,12 @@ describe('the pop-out URL', () => {
 
         expect(popOut.client.call.id).toBe(1)
         expect(location.search).toBe('?call=1&callee=')
+    })
+})
+
+describe('escape', () => {
+    it('makes a name safe to put into the HTML of a template of your own', () => {
+        expect(escape(`<img src=x onerror="alert('1')">&`)).toBe('&lt;img src=x onerror=&quot;alert(&#39;1&#39;)&quot;&gt;&amp;')
+        expect(escape(null)).toBe('')
     })
 })

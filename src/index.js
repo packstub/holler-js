@@ -1245,6 +1245,8 @@ export class CallClient extends EventTarget {
         if (order.indexOf(kind) <= order.indexOf(this.media) && this.cameraStream) return this.cameraStream
 
         const previous = this.cameraStream
+        const previousMedia = this.media
+        const epoch = this.epoch
         this.media = kind
         this.cameraStream = null
 
@@ -1252,9 +1254,20 @@ export class CallClient extends EventTarget {
         try {
             stream = await this.acquireMedia()
         } catch (error) {
+            // Nothing changed: the next startMedia() asks again.
             this.cameraStream = previous
+            this.media = previousMedia
             this.emit('error', { error, media: true })
             throw error
+        }
+
+        // The call ended (or the window was taken down) while the prompt was open: the
+        // camera and microphone go off again instead of staying on with no call.
+        if (epoch !== this.epoch) {
+            stream?.getTracks().forEach((track) => track.stop())
+            if (this.cameraStream === stream) this.cameraStream = null
+            if (! this.joined) this.releaseMedia()
+            throw new Error('The call was given up.')
         }
 
         // The tracks asked for before (a microphone going to video) are replaced, not doubled.

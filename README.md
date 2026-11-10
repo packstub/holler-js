@@ -14,6 +14,8 @@ WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small grou
 npm install @packstub/calls
 ```
 
+TypeScript declarations ship with the package (`src/index.d.ts`, `src/widget.d.ts`), including the typed events of `CallClient`.
+
 ## Use
 
 ```js
@@ -271,6 +273,7 @@ Names and avatars come from the server and are whatever people typed. The defaul
 
 ```bash
 npm test
+npm run test:types   # the README's examples compiled against the declarations
 ```
 
 The suite runs in Node with fakes for `RTCPeerConnection`, `MediaStream` and the media devices, and an in-memory signaling server that follows the backend's rules (participants with seats, a side held by one window, addressed signals), so two or three clients talk to each other through it in a test.

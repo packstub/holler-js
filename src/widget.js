@@ -176,7 +176,7 @@ export const templates = {
  *   data-calls-show="key" | "!key"          hidden unless truthy
  *   data-calls-class="name:key name2:!key"  classes toggled
  *   data-calls-attr="name:key name2:key2"   attributes set (null or false removes, true sets it empty)
- *   data-calls-src="key"                    src (removed when empty)
+ *   data-calls-src="key"                    src (removed when empty, or not an http(s), relative, blob: or data:image/ URL)
  *   data-calls-video="key"                  a MediaStream as srcObject, playing
  */
 export function patch(root, model) {
@@ -207,11 +207,29 @@ export function patch(root, model) {
         }
     })
     each('data-calls-src', (el, key) => {
-        const value = read(key)
+        const value = safeUrl(read(key))
         if (! value) el.removeAttribute('src')
         else if (el.getAttribute('src') !== value) el.setAttribute('src', value)
     })
     each('data-calls-video', (el, key) => attachStream(el, read(key) ?? null))
+}
+
+/**
+ * An image URL from the server (an avatar), or null for anything that is not one: http(s),
+ * a relative path, `blob:` and `data:image/` (not SVG) pass; `javascript:` and other schemes do not.
+ */
+export function safeUrl(value) {
+    if (typeof value !== 'string' || value.trim() === '') return null
+    const text = value.trim()
+    if (/^data:image\/(?!svg)[a-z0-9.+-]+[;,]/i.test(text)) return text
+
+    try {
+        const { protocol } = new URL(text, globalThis.document?.baseURI ?? 'http://localhost/')
+
+        return ['http:', 'https:', 'blob:'].includes(protocol) ? text : null
+    } catch {
+        return null
+    }
 }
 
 /**
@@ -830,7 +848,7 @@ export class CallWidget extends EventTarget {
             // The incoming toast
             peerName: peer?.name ?? '',
             peerAvatar: peer?.avatar ?? null,
-            hasAvatar: Boolean(peer?.avatar),
+            hasAvatar: Boolean(safeUrl(peer?.avatar)),
             initials: this.initials(peer?.name),
             others,
             hasOthers: others > 0,
@@ -861,7 +879,7 @@ export class CallWidget extends EventTarget {
             icons: this.icons,
             ...peer,
             initials: this.initials(peer.name),
-            hasAvatar: Boolean(peer.avatar),
+            hasAvatar: Boolean(safeUrl(peer.avatar)),
             ringing: peer.status === 'ringing',
             connecting: peer.status === 'joined' && ! peer.connected,
             showVideo,

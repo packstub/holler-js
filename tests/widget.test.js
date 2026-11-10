@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CallWidget, attachStream, patch, templates } from '../src/widget.js'
+import { CallWidget, attachStream, patch, safeUrl, templates } from '../src/widget.js'
 import { FakeServer, FakeTrack, installBrowserGlobals } from './fakes.js'
 
 let server
@@ -400,5 +400,25 @@ describe('autoplay', () => {
         // Only once: a later click plays nothing again.
         document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
         expect(play).toHaveBeenCalledTimes(3)
+    })
+})
+
+describe('avatars', () => {
+    it('only takes image URLs from the server: never javascript: or another scheme', () => {
+        const root = document.createElement('div')
+        root.setAttribute('data-calls-scope', '')
+        root.innerHTML = '<img data-calls-src="avatar">'
+        const img = root.querySelector('img')
+
+        for (const bad of ['javascript:alert(1)', ' JaVaScRiPt:alert(1)', 'data:text/html,<script>alert(1)</script>', 'data:image/svg+xml,<svg onload=alert(1)>', 'vbscript:x']) {
+            patch(root, { avatar: bad })
+            expect(img.hasAttribute('src'), bad).toBe(false)
+        }
+
+        for (const good of ['https://cdn.example.com/a.png', '/storage/avatars/1.jpg', 'avatars/1.jpg', 'data:image/png;base64,iVBOR', 'blob:https://example.com/1']) {
+            patch(root, { avatar: good })
+            expect(img.getAttribute('src')).toBe(good)
+        }
+        expect(safeUrl(null)).toBeNull()
     })
 })

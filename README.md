@@ -145,7 +145,9 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `leave()` | the `leave` beacon, for `pagehide` |
 | `destroy()` | stop polling, let go of the call and close the connections and the camera, without events |
 
-Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `muted`, `cameraOff`, `sharing`, `tab` (this window's id), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
+Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `cameraStream` (the camera and microphone as asked for), `screenStream` (the shared screen, or null), `muted`, `cameraOff`, `sharing`, `tab` (this window's id), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
+
+Polls that fail (the server down, the network gone) are reported as `error` and the next one waits longer, doubling each time, up to 5 seconds during a call and a minute otherwise; the first poll that works brings the normal pace back. `HttpSignaling` rejects a page returned in place of JSON (a login form behind a redirect) with `reason: 'invalid_response'`.
 
 ## Topologies
 
@@ -251,7 +253,7 @@ const widget = new CallWidget({
 | `labels`, `templates`, `icons` | the exported `labels`, `templates`, `icons` | override any of them |
 | `startPolling` | `true` | start at once; `false` to change things first and call `start()` yourself |
 
-Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `calls:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script. Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
+Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `calls:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script (`announce(text)` only tells a screen reader). Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
 
 Three ways to make it yours:
 
@@ -263,7 +265,7 @@ The module also exports `labels`, `templates` and `icons` (the defaults), `patch
 
 Names and avatars come from the server and are whatever people typed. The default templates never put them into the HTML: they reach the page through the hooks (`data-calls-text` sets text, `data-calls-src` takes only http(s), relative, `blob:` and `data:image/` URLs). A template of your own that writes a value from the model into its HTML string must pass it through `escape()` first.
 
-`CallClient` methods not documented here (`tick`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
+`CallClient` methods not documented here (`tick`, `schedule`, `interval`, `backoff`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
 
 ## Testing
 

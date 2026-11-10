@@ -285,6 +285,32 @@ describe('connecting', () => {
     })
 })
 
+describe('a network change', () => {
+    it('restarts ICE from the impolite side when the connection stays disconnected, before the call is dropped', async () => {
+        const { ion, ana } = await connect({ ion: { reconnectTimeout: 15000 }, ana: { reconnectTimeout: 15000 } })
+
+        ion.pc.setConnectionState('disconnected')
+        ana.pc.setConnectionState('disconnected')
+        await settle(2900)
+        expect(ion.pc.iceRestarts).toBe(0)
+
+        await settle(200)
+        expect(ion.pc.iceRestarts).toBe(1)
+        expect(ana.pc.iceRestarts).toBe(0)
+    })
+
+    it('does not restart a connection that came back by itself', async () => {
+        const { ion } = await connect({ ion: { reconnectTimeout: 15000 } })
+
+        ion.pc.setConnectionState('disconnected')
+        await settle(1000)
+        ion.pc.setConnectionState('connected')
+        await settle(5000)
+
+        expect(ion.pc.iceRestarts).toBe(0)
+    })
+})
+
 describe('in the call', () => {
     it('hangs up: media stopped, connection closed, the other side told', async () => {
         const { ion, ana, callId } = await connect()

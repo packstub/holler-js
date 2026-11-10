@@ -60,6 +60,9 @@
 // A data channel's sender waits once this much is queued (see `drain()`).
 const CHANNEL_LOW_WATER = 1024 * 1024
 
+// How long a connection may stay `disconnected` before the offering side restarts ICE.
+const ICE_RESTART_DELAY = 3000
+
 /**
  * Wait until a data channel has room again (its buffer is down to the low-water
  * mark): call before each large `send()` so a fast sender cannot fill the
@@ -305,7 +308,17 @@ class Link {
 
         pc.addEventListener('connectionstatechange', () => {
             if (this.closed) return
+            clearTimeout(this.restartTimer)
+            this.restartTimer = null
             if (pc.connectionState === 'failed' && ! this.polite) pc.restartIce()
+            // A network change (Wi-Fi to mobile data) leaves the connection `disconnected`; browsers
+            // call it `failed` only after about 30 seconds, past the reconnect timeout. Restart sooner.
+            if (pc.connectionState === 'disconnected') {
+                this.restartTimer = setTimeout(() => {
+                    this.restartTimer = null
+                    if (! this.closed && ! this.polite && pc.connectionState === 'disconnected') pc.restartIce()
+                }, ICE_RESTART_DELAY)
+            }
             client.connectionChanged(peer, this.connected)
         })
     }
@@ -430,6 +443,7 @@ class Link {
     close() {
         if (this.closed) return
         this.closed = true
+        clearTimeout(this.restartTimer)
         for (const channel of this.channels.values()) { try { channel.close() } catch {} }
         this.channels.clear()
         this.pc.getSenders().forEach((sender) => { try { this.pc.removeTrack(sender) } catch {} })

@@ -19,3 +19,4 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - Widget accessibility: every icon button has a name, the incoming call and notices are read out by screen readers, focus stays in the call after Accept, and the ringing pulse respects reduced motion
 - No screen share button in browsers that cannot share a screen (phones)
 - A pop-out reloaded mid-call continues the right call when an earlier call's id started with the same digits
+- A call recovers from a network change (Wi-Fi to mobile data): ICE restarts after 3 seconds disconnected instead of waiting for the browser to call the connection failed

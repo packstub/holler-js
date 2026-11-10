@@ -467,3 +467,16 @@ describe('accessibility', () => {
         expect(ion.views.notice.hasAttribute('role')).toBe(false)
     })
 })
+
+describe('screen share', () => {
+    it('offers no share button where the browser cannot share a screen (phones)', async () => {
+        const { ion, ana } = await connected()
+        const share = (instance) => instance.el.querySelector('[data-calls-action="toggleShare"]')
+        expect(share(ion).hidden).toBe(false)
+
+        delete navigator.mediaDevices.getDisplayMedia
+        ana.render()
+
+        expect(share(ana).hidden).toBe(true)
+    })
+})

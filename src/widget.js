@@ -877,7 +877,8 @@ export class CallWidget extends EventTarget {
             muted: this.muted,
             cameraOff: this.cameraOff,
             sharing: this.sharing,
-            canShare: this.state === 'active',
+            // Phones (iOS Safari, Android) cannot share a screen: no button there.
+            canShare: this.state === 'active' && typeof globalThis.navigator?.mediaDevices?.getDisplayMedia === 'function',
             mirror: ! this.sharing,
             hideLocal: this.cameraOff && ! this.sharing,
             localStream: this.client.localStream,

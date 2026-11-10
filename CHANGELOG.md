@@ -18,3 +18,4 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - The widget only shows avatars from http(s), relative, `blob:` or `data:image/` URLs, and falls back to initials for anything else
 - Widget accessibility: every icon button has a name, the incoming call and notices are read out by screen readers, focus stays in the call after Accept, and the ringing pulse respects reduced motion
 - No screen share button in browsers that cannot share a screen (phones)
+- A pop-out reloaded mid-call continues the right call when an earlier call's id started with the same digits

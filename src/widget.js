@@ -686,7 +686,8 @@ export class CallWidget extends EventTarget {
     /** The pop-out was opened to ring someone: from then on its URL names the call, so a reload continues it instead of ringing again. */
     syncUrl() {
         const call = this.client.call
-        if (this.inPopOut && call && this.windowUrl && ! location.search.includes('call=' + call.id)) {
+        // The `call` parameter itself: `?call=12` must not pass for call 1.
+        if (this.inPopOut && call && this.windowUrl && new URLSearchParams(location.search).get('call') !== String(call.id)) {
             history.replaceState(null, '', this.urlFor({ call: call.id }))
         }
     }

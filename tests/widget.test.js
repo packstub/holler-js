@@ -480,3 +480,15 @@ describe('screen share', () => {
         expect(share(ana).hidden).toBe(true)
     })
 })
+
+describe('the pop-out URL', () => {
+    it('names the call this window runs, also when the old URL named a call whose id starts the same', async () => {
+        // A pop-out whose URL still names call 12 (long over) rings Ana: the new call is call 1.
+        history.replaceState(null, '', '/calls/window?call=12&callee=ana')
+        const popOut = widget('ion', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__', openedFor: { callee: 'ana', trusted: true } })
+        await settle()
+
+        expect(popOut.client.call.id).toBe(1)
+        expect(location.search).toBe('?call=1&callee=')
+    })
+})

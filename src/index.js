@@ -1208,6 +1208,8 @@ export class CallClient extends EventTarget {
     join(call, { fresh = false } = {}) {
         this.call = call
         this.topology?.leave()
+        // Connected once, below: syncPeers() would connect the new peers too while `joined` still says the old call.
+        this.joined = false
         this.topology = this.topologyFor(call)
         this.topology.attach(this)
         this.topology.join?.(call)

@@ -96,6 +96,18 @@ describe('double clicks', () => {
 
         expect(first.closed).toBe(true)
     })
+
+    it('makes one connection per peer when a window joins another call', async () => {
+        const ion = client('ion')
+        ion.start()
+        await ion.callUser('ana')
+        const before = FakeRTCPeerConnection.instances.length
+
+        ion.join({ ...ion.call, id: 99, peer: { id: 'mihai', name: 'Mihai' }, peers: [{ id: 'mihai', name: 'Mihai', seat: 1, status: 'ringing' }] })
+
+        expect(FakeRTCPeerConnection.instances.length - before).toBe(1)
+        expect([...ion.topology.links.keys()]).toEqual(['mihai'])
+    })
 })
 
 describe('prompts', () => {

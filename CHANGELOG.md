@@ -14,3 +14,4 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - The microphone and camera turn off again when a call ends while `startMedia()` is still asking for them
 - Polls back off while the server or the network is down (up to 5 seconds during a call, a minute otherwise) instead of retrying at full speed
 - A page returned in place of JSON (a login form behind a redirect) is an error, no longer read as "no call", which ended the call
+- After a page load mid-call, a browser that blocks sound until a click shows the video muted and turns the sound on with the first click, instead of a frozen tile

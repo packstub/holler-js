@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CallWidget, patch, templates } from '../src/widget.js'
+import { CallWidget, attachStream, patch, templates } from '../src/widget.js'
 import { FakeServer, FakeTrack, installBrowserGlobals } from './fakes.js'
 
 let server
@@ -375,5 +375,30 @@ describe('the widget', () => {
 
     it('ships the default templates for anyone building on them', () => {
         expect(Object.keys(templates)).toEqual(['incoming', 'chip', 'window', 'tile', 'notice'])
+    })
+})
+
+describe('autoplay', () => {
+    it('plays muted when the browser wants a click first, and turns the sound on with the first click', async () => {
+        const refused = Object.assign(new Error('play() needs a user gesture'), { name: 'NotAllowedError' })
+        const play = vi.fn(function () { return this.muted || play.allowed ? Promise.resolve() : Promise.reject(refused) })
+        HTMLMediaElement.prototype.play = play
+        const video = document.createElement('video')
+        document.body.appendChild(video)
+
+        attachStream(video, { id: 'remote' })
+        await settle(0)
+        expect(video.muted).toBe(true)
+        expect(play).toHaveBeenCalledTimes(2)
+
+        play.allowed = true
+        document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        await settle(0)
+        expect(video.muted).toBe(false)
+        expect(play).toHaveBeenCalledTimes(3)
+
+        // Only once: a later click plays nothing again.
+        document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        expect(play).toHaveBeenCalledTimes(3)
     })
 })

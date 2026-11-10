@@ -214,13 +214,43 @@ export function patch(root, model) {
     each('data-calls-video', (el, key) => attachStream(el, read(key) ?? null))
 }
 
-/** A stream on a <video>, once: setting the same stream again would restart playback. */
+/**
+ * A stream on a <video>, once: setting the same stream again would restart playback. When the
+ * browser refuses to play sound before the person has clicked anything (a page that reloaded
+ * mid-call), the video plays muted and the sound comes on with the first click or key press.
+ */
 export function attachStream(video, stream) {
     if (video.srcObject === stream) return
     video.srcObject = stream
-    if (stream) {
-        try { video.play()?.catch?.(() => {}) } catch {}
-    }
+    if (stream) play(video)
+}
+
+function play(video) {
+    let playing
+    try { playing = video.play() } catch { return }
+
+    playing?.catch?.((error) => {
+        if (error?.name !== 'NotAllowedError' || video.__callsWaiting) return
+        const doc = video.ownerDocument
+        video.__callsWaiting = true
+        // Muted playback is always allowed: the picture at least.
+        const unmute = ! video.muted
+        if (unmute) {
+            video.muted = true
+            try { video.play()?.catch?.(() => {}) } catch {}
+        }
+
+        const resume = () => {
+            doc.removeEventListener('pointerdown', resume, true)
+            doc.removeEventListener('keydown', resume, true)
+            video.__callsWaiting = false
+            if (! video.srcObject) return
+            if (unmute) video.muted = false
+            play(video)
+        }
+        doc.addEventListener('pointerdown', resume, true)
+        doc.addEventListener('keydown', resume, true)
+    })
 }
 
 // A ring (two short beeps) for the callee, a ringback (one long tone) for the caller.

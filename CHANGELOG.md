@@ -12,3 +12,4 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - Data channels and calls without media, plus room for an SFU through the `topology` option
 - `CallWidget` (`@packstub/calls/widget`): a ready call UI for any page, restyled with CSS custom properties
 - The microphone and camera turn off again when a call ends while `startMedia()` is still asking for them
+- Polls back off while the server or the network is down (up to 5 seconds during a call, a minute otherwise) instead of retrying at full speed

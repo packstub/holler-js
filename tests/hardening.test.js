@@ -359,3 +359,37 @@ describe('second review', () => {
         expect(ana.pc.senders.map((sender) => sender.track.readyState)).toEqual(['live'])
     })
 })
+
+describe('failed polls', () => {
+    it('wait longer after each failure and go back to the normal pace once a poll works', async () => {
+        const ion = client('ion')
+        const signaling = server.clientFor('ion')
+        let down = true
+        const poll = vi.fn((query) => down ? Promise.reject(Object.assign(new Error('Bad gateway'), { status: 502 })) : signaling.poll(query))
+        ion.signaling = { ...signaling, poll }
+        ion.start()
+
+        // Idle polls every 100 ms; failing, they space out to 200, 400, 800…: at 0, 200, 600 and 1400.
+        await settle(1500)
+        expect(poll.mock.calls.length).toBe(4)
+        expect(ion.events('error')).toHaveLength(4)
+
+        // The next one (at 3000) works, and the pace is back to every 100 ms.
+        down = false
+        await settle(1550)
+        const recovered = poll.mock.calls.length
+        await settle(1000)
+        expect(poll.mock.calls.length - recovered).toBe(10)
+    })
+
+    it('never wait longer than five seconds during a call: the polls are its heartbeat', async () => {
+        const ion = client('ion')
+        ion.start()
+        await ion.callUser('ana')
+        ion.failures = 20
+
+        expect(ion.backoff()).toBe(5000)
+        ion.hangUp()
+        expect(ion.backoff()).toBe(60000)
+    })
+})

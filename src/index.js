@@ -581,6 +581,8 @@ export class CallClient extends EventTarget {
         this.timer = null
         this.dropTimer = null
         this.polling = false
+        // Polls failed in a row; the next one waits longer (see `backoff()`).
+        this.failures = 0
         this.inFlight = null
         this.takingOver = null
         // Bumped whenever this window lets go of a call: a poll sent before is not applied after.
@@ -677,11 +679,30 @@ export class CallClient extends EventTarget {
     schedule(delay) {
         clearTimeout(this.timer)
         if (! this.polling) return
+        this.timer = setTimeout(() => this.tick(), delay ?? this.interval())
+    }
+
+    /** Milliseconds to the next poll: fast while a call needs this window, slow in a hidden idle tab. */
+    interval() {
         // A window about to run a call (answering, resuming) polls fast: those polls hold its side.
-        const busy = this.joining || this.joined || (this.call && this.state !== 'elsewhere')
+        const busy = this.isBusy()
         const hidden = ! busy && this.state === 'idle' && ! this.call && globalThis.document?.hidden === true
-        const interval = delay ?? (hidden ? this.pollIntervals.hidden : busy ? this.pollIntervals.active : this.pollIntervals.idle)
-        this.timer = setTimeout(() => this.tick(), interval)
+
+        return hidden ? this.pollIntervals.hidden : busy ? this.pollIntervals.active : this.pollIntervals.idle
+    }
+
+    isBusy() {
+        return Boolean(this.joining || this.joined || (this.call && this.state !== 'elsewhere'))
+    }
+
+    /**
+     * After failed polls (the server down, the network gone) the next one waits longer, doubling
+     * each time: up to 5 seconds during a call (the polls are its heartbeat), a minute otherwise.
+     */
+    backoff() {
+        const cap = this.isBusy() ? Math.max(5000, this.pollIntervals.active) : Math.max(60000, this.pollIntervals.idle)
+
+        return Math.min(cap, this.interval() * 2 ** Math.min(this.failures, 10))
     }
 
     async tick() {
@@ -693,9 +714,15 @@ export class CallClient extends EventTarget {
         const epoch = this.epoch
         this.inFlight = this.signaling.poll({ after: this.cursor, call, tab: this.tab, hold })
             // Sent before this window hung up or declined: what it says is about a call that is gone here.
-            .then((data) => epoch === this.epoch ? this.handlePoll(data, call) : undefined)
-            .catch((error) => this.emit('error', { error }))
-            .finally(() => { this.inFlight = null; this.schedule() })
+            .then((data) => {
+                this.failures = 0
+                return epoch === this.epoch ? this.handlePoll(data, call) : undefined
+            })
+            .catch((error) => {
+                this.failures++
+                this.emit('error', { error })
+            })
+            .finally(() => { this.inFlight = null; this.schedule(this.failures ? this.backoff() : undefined) })
         await this.inFlight
     }
 

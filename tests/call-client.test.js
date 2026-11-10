@@ -384,6 +384,9 @@ describe('in the call', () => {
         expect(ana.peerMuted).toBe(true)
         expect(server.sent('ana').map((signal) => signal.type)).toEqual(['offer', 'state'])
 
+        ana.pc.receiveTrack(new FakeTrack('video'))
+        expect(ana.peers[0].stream).not.toBeNull()
+
         // Ion reloads: his fresh page starts unmuted, and Ana stops showing him as muted.
         ion.leave()
         ion.stop()
@@ -393,6 +396,8 @@ describe('in the call', () => {
 
         expect(ana.events('peerstate').at(-1)).toMatchObject({ muted: false, cameraOff: false, sharing: false })
         expect(ana.peerMuted).toBe(false)
+        // His old picture went with his old page.
+        expect(ana.peers[0].stream).toBeNull()
 
         // Ana was muted meanwhile: the reloaded page hears about it with the answer.
         ana.setMuted(true)

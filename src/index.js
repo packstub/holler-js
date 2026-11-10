@@ -1477,6 +1477,8 @@ export class CallClient extends EventTarget {
             // everything off there until it says otherwise.
             this.topology.reset?.(peer, payload)
             peer.connected = false
+            // Their old media ended with their old page: no frozen picture until the new one arrives.
+            if (peer.stream && peer.stream !== this.topology.link?.(peer.id)?.stream) peer.stream = null
             if (this.roster.size === 1 && (this.state === 'active' || this.state === 'reconnecting')) this.setState('connecting')
             if (peer.muted || peer.cameraOff || peer.sharing) {
                 peer.muted = peer.cameraOff = peer.sharing = false

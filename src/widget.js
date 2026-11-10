@@ -209,7 +209,8 @@ export function patch(root, model) {
         }
     })
     each('data-calls-src', (el, key) => {
-        const value = safeUrl(read(key))
+        // An SVG avatar is fine in an <img> (no scripts run there), not in an element of a custom template that would run them.
+        const value = safeUrl(read(key), { svg: el.tagName === 'IMG' })
         if (! value) el.removeAttribute('src')
         else if (el.getAttribute('src') !== value) el.setAttribute('src', value)
     })
@@ -218,12 +219,13 @@ export function patch(root, model) {
 
 /**
  * An image URL from the server (an avatar), or null for anything that is not one: http(s),
- * a relative path, `blob:` and `data:image/` (not SVG) pass; `javascript:` and other schemes do not.
+ * a relative path, `blob:` and `data:image/` pass (SVG data only with `svg`, for an <img>); `javascript:`
+ * and other schemes do not.
  */
-export function safeUrl(value) {
+export function safeUrl(value, { svg = false } = {}) {
     if (typeof value !== 'string' || value.trim() === '') return null
     const text = value.trim()
-    if (/^data:image\/(?!svg)[a-z0-9.+-]+[;,]/i.test(text)) return text
+    if (/^data:image\//i.test(text)) return /^data:image\/[a-z0-9.+-]+[;,]/i.test(text) && (svg || ! /^data:image\/svg/i.test(text)) ? text : null
 
     try {
         const { protocol } = new URL(text, globalThis.document?.baseURI ?? 'http://localhost/')
@@ -870,7 +872,7 @@ export class CallWidget extends EventTarget {
             peerName: peer?.name ?? '',
             incomingLabel: `${peer?.name ?? ''} ${this.labels.incoming}`.trim(),
             peerAvatar: peer?.avatar ?? null,
-            hasAvatar: Boolean(safeUrl(peer?.avatar)),
+            hasAvatar: Boolean(safeUrl(peer?.avatar, { svg: true })),
             initials: this.initials(peer?.name),
             others,
             hasOthers: others > 0,
@@ -902,7 +904,7 @@ export class CallWidget extends EventTarget {
             icons: this.icons,
             ...peer,
             initials: this.initials(peer.name),
-            hasAvatar: Boolean(safeUrl(peer.avatar)),
+            hasAvatar: Boolean(safeUrl(peer.avatar, { svg: true })),
             ringing: peer.status === 'ringing',
             connecting: peer.status === 'joined' && ! peer.connected,
             showVideo,

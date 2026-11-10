@@ -410,7 +410,7 @@ describe('avatars', () => {
         root.innerHTML = '<img data-calls-src="avatar">'
         const img = root.querySelector('img')
 
-        for (const bad of ['javascript:alert(1)', ' JaVaScRiPt:alert(1)', 'data:text/html,<script>alert(1)</script>', 'data:image/svg+xml,<svg onload=alert(1)>', 'vbscript:x']) {
+        for (const bad of ['javascript:alert(1)', ' JaVaScRiPt:alert(1)', 'data:text/html,<script>alert(1)</script>', 'vbscript:x']) {
             patch(root, { avatar: bad })
             expect(img.hasAttribute('src'), bad).toBe(false)
         }
@@ -420,6 +420,11 @@ describe('avatars', () => {
             expect(img.getAttribute('src')).toBe(good)
         }
         expect(safeUrl(null)).toBeNull()
+
+        // An SVG avatar shows in an <img>, where no script runs; not in another element.
+        patch(root, { avatar: 'data:image/svg+xml,<svg/>' })
+        expect(img.getAttribute('src')).toBe('data:image/svg+xml,<svg/>')
+        expect(safeUrl('data:image/svg+xml,<svg/>')).toBeNull()
     })
 })
 

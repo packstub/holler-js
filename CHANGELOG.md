@@ -11,4 +11,5 @@ First release of `@packstub/calls`: the browser side of WebRTC calls, 1-on-1 and
 - `HttpSignaling` for a polled HTTP backend, backing off while the server is down, and a documented interface for your own
 - Data channels and calls without media (`startMedia()` adds the microphone or camera later), plus room for an SFU through the `topology` option
 - `CallWidget` (`@packstub/calls/widget`): a ready call UI for any page, restyled with CSS custom properties, usable from the keyboard and with a screen reader
+- TypeScript declarations for the engine and the widget
 - Names and avatars from the server never reach the page as HTML: text is set as text, avatars only from image URLs, and `escape()` for templates of your own

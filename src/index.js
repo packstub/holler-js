@@ -60,6 +60,9 @@
 // A data channel's sender waits once this much is queued (see `drain()`).
 const CHANNEL_LOW_WATER = 1024 * 1024
 
+// How long a connection may stay `disconnected` before the offering side restarts ICE.
+const ICE_RESTART_DELAY = 3000
+
 /**
  * Wait until a data channel has room again (its buffer is down to the low-water
  * mark): call before each large `send()` so a fast sender cannot fill the
@@ -124,13 +127,30 @@ export class HttpSignaling {
             signal: this.timeout && typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(this.timeout) : undefined,
         })
 
-        const data = await response.json().catch(() => ({}))
+        let data = {}
+        let parsed = true
+        try {
+            if (typeof response.text === 'function') {
+                const text = await response.text()
+                if (text.trim() !== '') data = JSON.parse(text) ?? {}
+            } else {
+                data = (await response.json()) ?? {}
+            }
+        } catch {
+            parsed = false
+        }
 
         if (! response.ok) {
             const error = new Error(data.message || `${method} ${url} failed (${response.status})`)
             error.status = response.status
             error.reason = data.reason ?? null
             throw error
+        }
+
+        // A page instead of JSON (a login form behind a redirect, a proxy's error page): read as
+        // "no call", it would end the call this window is on.
+        if (! parsed) {
+            throw Object.assign(new Error(`${method} ${url} did not answer with JSON (${response.status})`), { status: response.status, reason: 'invalid_response' })
         }
 
         return data
@@ -288,7 +308,17 @@ class Link {
 
         pc.addEventListener('connectionstatechange', () => {
             if (this.closed) return
+            clearTimeout(this.restartTimer)
+            this.restartTimer = null
             if (pc.connectionState === 'failed' && ! this.polite) pc.restartIce()
+            // A network change (Wi-Fi to mobile data) leaves the connection `disconnected`; browsers
+            // call it `failed` only after about 30 seconds, past the reconnect timeout. Restart sooner.
+            if (pc.connectionState === 'disconnected') {
+                this.restartTimer = setTimeout(() => {
+                    this.restartTimer = null
+                    if (! this.closed && ! this.polite && pc.connectionState === 'disconnected') pc.restartIce()
+                }, ICE_RESTART_DELAY)
+            }
             client.connectionChanged(peer, this.connected)
         })
     }
@@ -413,6 +443,7 @@ class Link {
     close() {
         if (this.closed) return
         this.closed = true
+        clearTimeout(this.restartTimer)
         for (const channel of this.channels.values()) { try { channel.close() } catch {} }
         this.channels.clear()
         this.pc.getSenders().forEach((sender) => { try { this.pc.removeTrack(sender) } catch {} })
@@ -546,6 +577,8 @@ export class CallClient extends EventTarget {
         this.iceTransportPolicy = iceTransportPolicy === 'relay' ? 'relay' : 'all'
         this.video = video
         this.media = media ?? (video ? 'video' : 'audio')
+        // What every call starts with; `startMedia()` raises `media` for the call it runs in.
+        this.startingMedia = this.media
         this.channelLabels = [...channels]
         // Without a track or a channel nothing would ever start the connection.
         if (this.media === 'none' && ! this.channelLabels.length) throw new Error("media: 'none' needs at least one data channel in `channels`.")
@@ -581,6 +614,8 @@ export class CallClient extends EventTarget {
         this.timer = null
         this.dropTimer = null
         this.polling = false
+        // Polls failed in a row; the next one waits longer (see `backoff()`).
+        this.failures = 0
         this.inFlight = null
         this.takingOver = null
         // Bumped whenever this window lets go of a call: a poll sent before is not applied after.
@@ -677,11 +712,30 @@ export class CallClient extends EventTarget {
     schedule(delay) {
         clearTimeout(this.timer)
         if (! this.polling) return
+        this.timer = setTimeout(() => this.tick(), delay ?? this.interval())
+    }
+
+    /** Milliseconds to the next poll: fast while a call needs this window, slow in a hidden idle tab. */
+    interval() {
         // A window about to run a call (answering, resuming) polls fast: those polls hold its side.
-        const busy = this.joining || this.joined || (this.call && this.state !== 'elsewhere')
+        const busy = this.isBusy()
         const hidden = ! busy && this.state === 'idle' && ! this.call && globalThis.document?.hidden === true
-        const interval = delay ?? (hidden ? this.pollIntervals.hidden : busy ? this.pollIntervals.active : this.pollIntervals.idle)
-        this.timer = setTimeout(() => this.tick(), interval)
+
+        return hidden ? this.pollIntervals.hidden : busy ? this.pollIntervals.active : this.pollIntervals.idle
+    }
+
+    isBusy() {
+        return Boolean(this.joining || this.joined || (this.call && this.state !== 'elsewhere'))
+    }
+
+    /**
+     * After failed polls (the server down, the network gone) the next one waits longer, doubling
+     * each time: up to 5 seconds during a call (the polls are its heartbeat), a minute otherwise.
+     */
+    backoff() {
+        const cap = this.isBusy() ? Math.max(5000, this.pollIntervals.active) : Math.max(60000, this.pollIntervals.idle)
+
+        return Math.min(cap, this.interval() * 2 ** Math.min(this.failures, 10))
     }
 
     async tick() {
@@ -693,9 +747,15 @@ export class CallClient extends EventTarget {
         const epoch = this.epoch
         this.inFlight = this.signaling.poll({ after: this.cursor, call, tab: this.tab, hold })
             // Sent before this window hung up or declined: what it says is about a call that is gone here.
-            .then((data) => epoch === this.epoch ? this.handlePoll(data, call) : undefined)
-            .catch((error) => this.emit('error', { error }))
-            .finally(() => { this.inFlight = null; this.schedule() })
+            .then((data) => {
+                this.failures = 0
+                return epoch === this.epoch ? this.handlePoll(data, call) : undefined
+            })
+            .catch((error) => {
+                this.failures++
+                this.emit('error', { error })
+            })
+            .finally(() => { this.inFlight = null; this.schedule(this.failures ? this.backoff() : undefined) })
         await this.inFlight
     }
 
@@ -1150,6 +1210,8 @@ export class CallClient extends EventTarget {
     join(call, { fresh = false } = {}) {
         this.call = call
         this.topology?.leave()
+        // Connected once, below: syncPeers() would connect the new peers too while `joined` still says the old call.
+        this.joined = false
         this.topology = this.topologyFor(call)
         this.topology.attach(this)
         this.topology.join?.(call)
@@ -1245,6 +1307,8 @@ export class CallClient extends EventTarget {
         if (order.indexOf(kind) <= order.indexOf(this.media) && this.cameraStream) return this.cameraStream
 
         const previous = this.cameraStream
+        const previousMedia = this.media
+        const epoch = this.epoch
         this.media = kind
         this.cameraStream = null
 
@@ -1252,9 +1316,22 @@ export class CallClient extends EventTarget {
         try {
             stream = await this.acquireMedia()
         } catch (error) {
-            this.cameraStream = previous
+            // Nothing changed: the next startMedia() asks again.
+            if (epoch === this.epoch) {
+                this.cameraStream = previous
+                this.media = previousMedia
+            }
             this.emit('error', { error, media: true })
             throw error
+        }
+
+        // The call ended (or the window was taken down) while the prompt was open: the
+        // camera and microphone go off again instead of staying on with no call.
+        if (epoch !== this.epoch) {
+            stream?.getTracks().forEach((track) => track.stop())
+            if (this.cameraStream === stream) this.cameraStream = null
+            if (! this.joined) this.releaseMedia()
+            throw new Error('The call was given up.')
         }
 
         // The tracks asked for before (a microphone going to video) are replaced, not doubled.
@@ -1400,6 +1477,8 @@ export class CallClient extends EventTarget {
             // everything off there until it says otherwise.
             this.topology.reset?.(peer, payload)
             peer.connected = false
+            // Their old media ended with their old page: no frozen picture until the new one arrives.
+            if (peer.stream && peer.stream !== this.topology.link?.(peer.id)?.stream) peer.stream = null
             if (this.roster.size === 1 && (this.state === 'active' || this.state === 'reconnecting')) this.setState('connecting')
             if (peer.muted || peer.cameraOff || peer.sharing) {
                 peer.muted = peer.cameraOff = peer.sharing = false
@@ -1441,6 +1520,7 @@ export class CallClient extends EventTarget {
         this.roster.clear()
         this.buffered = []
         this.resumeId = null
+        this.media = this.startingMedia
         this.setState('idle')
     }
 

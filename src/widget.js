@@ -91,7 +91,8 @@ export const labels = {
     no_media: 'Could not access your camera or microphone.',
 }
 
-const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
+/** Text made safe to put into HTML: what a template of your own does with a name or anything else from the server. */
+export const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]))
 
 /**
  * The default markup. Each function gets the view model (`model()` or `tileModel()`,
@@ -100,7 +101,7 @@ const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) => ({ '&'
  */
 export const templates = {
     incoming: (v) => `
-        <div class="calls-card calls-incoming" role="alertdialog" data-calls-scope>
+        <div class="calls-card calls-incoming" role="alertdialog" data-calls-scope data-calls-attr="aria-label:incomingLabel">
             <div class="calls-person">
                 <img class="calls-avatar" alt="" data-calls-src="peerAvatar" data-calls-show="hasAvatar">
                 <span class="calls-avatar calls-avatar-initials" data-calls-text="initials" data-calls-show="!hasAvatar"></span>
@@ -110,8 +111,8 @@ export const templates = {
                 </div>
             </div>
             <div class="calls-actions">
-                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="decline" title="${escape(v.labels.decline)}">${v.icons.phoneX}</button>
-                <button type="button" class="calls-btn calls-btn-success calls-pulse" data-calls-action="accept" title="${escape(v.labels.accept)}">${v.icons.phone}</button>
+                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="decline" title="${escape(v.labels.decline)}" aria-label="${escape(v.labels.decline)}">${v.icons.phoneX}</button>
+                <button type="button" class="calls-btn calls-btn-success calls-pulse" data-calls-action="accept" title="${escape(v.labels.accept)}" aria-label="${escape(v.labels.accept)}">${v.icons.phone}</button>
             </div>
         </div>`,
 
@@ -124,26 +125,26 @@ export const templates = {
                     <span class="calls-dim" data-calls-text="status"></span>
                 </span>
             </button>
-            <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+            <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
         </div>`,
 
     window: (v) => `
-        <div class="calls-card calls-window" data-calls-scope>
+        <div class="calls-card calls-window" role="region" data-calls-scope data-calls-attr="aria-label:names">
             <div class="calls-header">
                 <div class="calls-name" data-calls-text="names"></div>
                 <div class="calls-dim" data-calls-text="status"></div>
             </div>
             <div class="calls-stage" data-calls-ref="stage" data-calls-attr="data-spotlight:spotlight data-strip:strip">
                 <div class="calls-grid" data-calls-ref="grid" data-calls-attr="data-count:count"></div>
-                <video autoplay playsinline muted class="calls-local" data-calls-video="localStream" data-calls-class="calls-mirror:mirror calls-hidden:hideLocal"></video>
+                <video autoplay playsinline muted class="calls-local" aria-label="${escape(v.labels.you)}" data-calls-video="localStream" data-calls-class="calls-mirror:mirror calls-hidden:hideLocal"></video>
             </div>
             <div class="calls-controls">
-                <button type="button" class="calls-btn" data-calls-action="toggleMute" data-calls-class="calls-btn-off:muted" data-calls-attr="title:muteTitle">${v.icons.microphone}</button>
-                <button type="button" class="calls-btn" data-calls-action="toggleCamera" data-calls-class="calls-btn-off:cameraOff" data-calls-attr="title:cameraTitle">
+                <button type="button" class="calls-btn" data-calls-action="toggleMute" data-calls-class="calls-btn-off:muted" data-calls-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
+                <button type="button" class="calls-btn" data-calls-action="toggleCamera" data-calls-class="calls-btn-off:cameraOff" data-calls-attr="title:cameraTitle aria-label:cameraTitle">
                     <span data-calls-show="!cameraOff">${v.icons.camera}</span><span data-calls-show="cameraOff">${v.icons.cameraOff}</span>
                 </button>
-                <button type="button" class="calls-btn" data-calls-action="toggleShare" data-calls-show="canShare" data-calls-class="calls-btn-on:sharing" data-calls-attr="title:shareTitle">${v.icons.screen}</button>
-                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+                <button type="button" class="calls-btn" data-calls-action="toggleShare" data-calls-show="canShare" data-calls-class="calls-btn-on:sharing" data-calls-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
+                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
             </div>
         </div>`,
 
@@ -166,7 +167,8 @@ export const templates = {
             </div>
         </div>`,
 
-    notice: () => '<div class="calls-card calls-notice" role="status" data-calls-scope data-calls-text="notice"></div>',
+    // Read out through the widget's live region, which is there before the text changes (a live region added with its text is often not read).
+    notice: () => '<div class="calls-card calls-notice" data-calls-scope data-calls-text="notice"></div>',
 }
 
 /**
@@ -176,7 +178,7 @@ export const templates = {
  *   data-calls-show="key" | "!key"          hidden unless truthy
  *   data-calls-class="name:key name2:!key"  classes toggled
  *   data-calls-attr="name:key name2:key2"   attributes set (null or false removes, true sets it empty)
- *   data-calls-src="key"                    src (removed when empty)
+ *   data-calls-src="key"                    src (removed when empty, or not an http(s), relative, blob: or data:image/ URL)
  *   data-calls-video="key"                  a MediaStream as srcObject, playing
  */
 export function patch(root, model) {
@@ -207,20 +209,70 @@ export function patch(root, model) {
         }
     })
     each('data-calls-src', (el, key) => {
-        const value = read(key)
+        // An SVG avatar is fine in an <img> (no scripts run there), not in an element of a custom template that would run them.
+        const value = safeUrl(read(key), { svg: el.tagName === 'IMG' })
         if (! value) el.removeAttribute('src')
         else if (el.getAttribute('src') !== value) el.setAttribute('src', value)
     })
     each('data-calls-video', (el, key) => attachStream(el, read(key) ?? null))
 }
 
-/** A stream on a <video>, once: setting the same stream again would restart playback. */
+/**
+ * An image URL from the server (an avatar), or null for anything that is not one: http(s),
+ * a relative path, `blob:` and `data:image/` pass (SVG data only with `svg`, for an <img>); `javascript:`
+ * and other schemes do not.
+ */
+export function safeUrl(value, { svg = false } = {}) {
+    if (typeof value !== 'string' || value.trim() === '') return null
+    const text = value.trim()
+    if (/^data:image\//i.test(text)) return /^data:image\/[a-z0-9.+-]+[;,]/i.test(text) && (svg || ! /^data:image\/svg/i.test(text)) ? text : null
+
+    try {
+        const { protocol } = new URL(text, globalThis.document?.baseURI ?? 'http://localhost/')
+
+        return ['http:', 'https:', 'blob:'].includes(protocol) ? text : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * A stream on a <video>, once: setting the same stream again would restart playback. When the
+ * browser refuses to play sound before the person has clicked anything (a page that reloaded
+ * mid-call), the video plays muted and the sound comes on with the first click or key press.
+ */
 export function attachStream(video, stream) {
     if (video.srcObject === stream) return
     video.srcObject = stream
-    if (stream) {
-        try { video.play()?.catch?.(() => {}) } catch {}
-    }
+    if (stream) play(video)
+}
+
+function play(video) {
+    let playing
+    try { playing = video.play() } catch { return }
+
+    playing?.catch?.((error) => {
+        if (error?.name !== 'NotAllowedError' || video.__callsWaiting) return
+        const doc = video.ownerDocument
+        video.__callsWaiting = true
+        // Muted playback is always allowed: the picture at least.
+        const unmute = ! video.muted
+        if (unmute) {
+            video.muted = true
+            try { video.play()?.catch?.(() => {}) } catch {}
+        }
+
+        const resume = () => {
+            doc.removeEventListener('pointerdown', resume, true)
+            doc.removeEventListener('keydown', resume, true)
+            video.__callsWaiting = false
+            if (! video.srcObject) return
+            if (unmute) video.muted = false
+            play(video)
+        }
+        doc.addEventListener('pointerdown', resume, true)
+        doc.addEventListener('keydown', resume, true)
+    })
 }
 
 // A ring (two short beeps) for the callee, a ringback (one long tone) for the caller.
@@ -399,6 +451,12 @@ export class CallWidget extends EventTarget {
             this.el.appendChild(slot)
             this.slots[name] = slot
         }
+        // What a screen reader says: notices, and who is calling.
+        this.live = document.createElement('div')
+        this.live.className = 'calls-live'
+        this.live.setAttribute('role', 'status')
+        this.live.setAttribute('aria-live', 'polite')
+        this.el.appendChild(this.live)
         this.el.addEventListener('click', (event) => {
             const button = event.target.closest('[data-calls-action]')
             if (button && this.el.contains(button)) this.act(button.getAttribute('data-calls-action'))
@@ -462,7 +520,11 @@ export class CallWidget extends EventTarget {
 
             this.render()
         })
-        this.on(client, 'incoming', ({ detail: { call } }) => { this.call = call; this.render() })
+        this.on(client, 'incoming', ({ detail: { call } }) => {
+            this.call = call
+            this.render()
+            this.announce(this.model().incomingLabel)
+        })
         this.on(client, 'update', ({ detail: { call } }) => {
             this.call = call
             // The chip's clock counts from the answer, not from the ringing.
@@ -609,9 +671,17 @@ export class CallWidget extends EventTarget {
 
     show(text) {
         this.notice = text
+        this.announce(text)
         clearTimeout(this.noticeTimer)
         this.noticeTimer = setTimeout(() => { this.notice = null; this.render() }, 4000)
         this.render()
+    }
+
+    /** Say this to a screen reader (the live region), without showing anything. */
+    announce(text) {
+        this.live.textContent = ''
+        // A new text node, even for the same words twice in a row, so it is read again.
+        setTimeout(() => { this.live.textContent = text }, 50)
     }
 
     // ---- the pop-out ---------------------------------------------------------
@@ -619,7 +689,8 @@ export class CallWidget extends EventTarget {
     /** The pop-out was opened to ring someone: from then on its URL names the call, so a reload continues it instead of ringing again. */
     syncUrl() {
         const call = this.client.call
-        if (this.inPopOut && call && this.windowUrl && ! location.search.includes('call=' + call.id)) {
+        // The `call` parameter itself: `?call=12` must not pass for call 1.
+        if (this.inPopOut && call && this.windowUrl && new URLSearchParams(location.search).get('call') !== String(call.id)) {
             history.replaceState(null, '', this.urlFor({ call: call.id }))
         }
     }
@@ -799,8 +870,9 @@ export class CallWidget extends EventTarget {
             notice: this.notice,
             // The incoming toast
             peerName: peer?.name ?? '',
+            incomingLabel: `${peer?.name ?? ''} ${this.labels.incoming}`.trim(),
             peerAvatar: peer?.avatar ?? null,
-            hasAvatar: Boolean(peer?.avatar),
+            hasAvatar: Boolean(safeUrl(peer?.avatar, { svg: true })),
             initials: this.initials(peer?.name),
             others,
             hasOthers: others > 0,
@@ -809,7 +881,8 @@ export class CallWidget extends EventTarget {
             muted: this.muted,
             cameraOff: this.cameraOff,
             sharing: this.sharing,
-            canShare: this.state === 'active',
+            // Phones (iOS Safari, Android) cannot share a screen: no button there.
+            canShare: this.state === 'active' && typeof globalThis.navigator?.mediaDevices?.getDisplayMedia === 'function',
             mirror: ! this.sharing,
             hideLocal: this.cameraOff && ! this.sharing,
             localStream: this.client.localStream,
@@ -831,7 +904,7 @@ export class CallWidget extends EventTarget {
             icons: this.icons,
             ...peer,
             initials: this.initials(peer.name),
-            hasAvatar: Boolean(peer.avatar),
+            hasAvatar: Boolean(safeUrl(peer.avatar, { svg: true })),
             ringing: peer.status === 'ringing',
             connecting: peer.status === 'joined' && ! peer.connected,
             showVideo,
@@ -847,6 +920,8 @@ export class CallWidget extends EventTarget {
     render() {
         this.peers = this.client.peers.map((peer) => ({ ...peer, hasVideo: (peer.stream?.getVideoTracks().length ?? 0) > 0 }))
         const model = this.model()
+        // A keyboard user who answered or hung up from a view that goes away keeps their place.
+        const focused = this.el.contains(document.activeElement) ? document.activeElement : null
 
         this.toggleView('incoming', this.state === 'ringing', model)
         this.toggleView('chip', this.state === 'elsewhere', model)
@@ -854,6 +929,15 @@ export class CallWidget extends EventTarget {
         this.toggleView('notice', Boolean(this.notice), model)
 
         if (this.views.window) this.renderTiles(model.spotlight)
+
+        if (focused && ! focused.isConnected) {
+            // The first control (mute, or the chip's open button), not hang up: an Enter too many must not end the call.
+            const next = (this.views.window ?? this.views.chip)?.querySelector('[data-calls-action]')
+            if (next) next.focus()
+            else if (this.focusBefore?.isConnected) this.focusBefore.focus()
+        }
+        // Where focus goes back to once the call is over: wherever it was before the widget showed up.
+        if (! this.el.contains(document.activeElement) && document.activeElement !== document.body) this.focusBefore = document.activeElement
     }
 
     toggleView(name, visible, model) {

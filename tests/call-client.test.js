@@ -285,6 +285,32 @@ describe('connecting', () => {
     })
 })
 
+describe('a network change', () => {
+    it('restarts ICE from the impolite side when the connection stays disconnected, before the call is dropped', async () => {
+        const { ion, ana } = await connect({ ion: { reconnectTimeout: 15000 }, ana: { reconnectTimeout: 15000 } })
+
+        ion.pc.setConnectionState('disconnected')
+        ana.pc.setConnectionState('disconnected')
+        await settle(2900)
+        expect(ion.pc.iceRestarts).toBe(0)
+
+        await settle(200)
+        expect(ion.pc.iceRestarts).toBe(1)
+        expect(ana.pc.iceRestarts).toBe(0)
+    })
+
+    it('does not restart a connection that came back by itself', async () => {
+        const { ion } = await connect({ ion: { reconnectTimeout: 15000 } })
+
+        ion.pc.setConnectionState('disconnected')
+        await settle(1000)
+        ion.pc.setConnectionState('connected')
+        await settle(5000)
+
+        expect(ion.pc.iceRestarts).toBe(0)
+    })
+})
+
 describe('in the call', () => {
     it('hangs up: media stopped, connection closed, the other side told', async () => {
         const { ion, ana, callId } = await connect()
@@ -358,6 +384,9 @@ describe('in the call', () => {
         expect(ana.peerMuted).toBe(true)
         expect(server.sent('ana').map((signal) => signal.type)).toEqual(['offer', 'state'])
 
+        ana.pc.receiveTrack(new FakeTrack('video'))
+        expect(ana.peers[0].stream).not.toBeNull()
+
         // Ion reloads: his fresh page starts unmuted, and Ana stops showing him as muted.
         ion.leave()
         ion.stop()
@@ -367,6 +396,8 @@ describe('in the call', () => {
 
         expect(ana.events('peerstate').at(-1)).toMatchObject({ muted: false, cameraOff: false, sharing: false })
         expect(ana.peerMuted).toBe(false)
+        // His old picture went with his old page.
+        expect(ana.peers[0].stream).toBeNull()
 
         // Ana was muted meanwhile: the reloaded page hears about it with the answer.
         ana.setMuted(true)

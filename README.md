@@ -14,6 +14,8 @@ WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small grou
 npm install @packstub/calls
 ```
 
+TypeScript declarations ship with the package (`src/index.d.ts`, `src/widget.d.ts`), including the typed events of `CallClient`.
+
 ## Use
 
 ```js
@@ -145,7 +147,9 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `leave()` | the `leave` beacon, for `pagehide` |
 | `destroy()` | stop polling, let go of the call and close the connections and the camera, without events |
 
-Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `muted`, `cameraOff`, `sharing`, `tab` (this window's id), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
+Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `cameraStream` (the camera and microphone as asked for), `screenStream` (the shared screen, or null), `muted`, `cameraOff`, `sharing`, `tab` (this window's id), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
+
+Polls that fail (the server down, the network gone) are reported as `error` and the next one waits longer, doubling each time, up to 5 seconds during a call and a minute otherwise; the first poll that works brings the normal pace back. `HttpSignaling` rejects a page returned in place of JSON (a login form behind a redirect) with `reason: 'invalid_response'`.
 
 ## Topologies
 
@@ -251,7 +255,7 @@ const widget = new CallWidget({
 | `labels`, `templates`, `icons` | the exported `labels`, `templates`, `icons` | override any of them |
 | `startPolling` | `true` | start at once; `false` to change things first and call `start()` yourself |
 
-Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `calls:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script. Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
+Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `calls:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script (`announce(text)` only tells a screen reader). Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
 
 Three ways to make it yours:
 
@@ -259,14 +263,17 @@ Three ways to make it yours:
 - **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-calls-text="key"`, `data-calls-show="key"` (or `"!key"`), `data-calls-class="name:key …"`, `data-calls-attr="name:key …"`, `data-calls-src="key"`, `data-calls-video="key"` (a MediaStream) and `data-calls-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|focusWindow"`. The root of a template carries `data-calls-scope`; the window's needs `data-calls-ref="grid"` for the tiles and `data-calls-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `startPolling: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `role`).
 - **Subclass.** `model()`, `tileModel()`, `render()`, `renderTiles()`, `placeStrip()` and the actions are methods on `CallWidget`.
 
-The module also exports `labels`, `templates` and `icons` (the defaults), `patch(root, model)` (applies the hooks to a piece of markup), `attachStream(video, stream)` and `fill(label, values)` (fills in `:name` and the like), for templates and subclasses of your own.
+The module also exports `labels`, `templates` and `icons` (the defaults), `patch(root, model)` (applies the hooks to a piece of markup), `attachStream(video, stream)`, `fill(label, values)` (fills in `:name` and the like), `escape(text)` and `safeUrl(url)`, for templates and subclasses of your own.
 
-`CallClient` methods not documented here (`tick`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
+Names and avatars come from the server and are whatever people typed. The default templates never put them into the HTML: they reach the page through the hooks (`data-calls-text` sets text, `data-calls-src` takes only http(s), relative, `blob:` and `data:image/` URLs). A template of your own that writes a value from the model into its HTML string must pass it through `escape()` first.
+
+`CallClient` methods not documented here (`tick`, `schedule`, `interval`, `backoff`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
 
 ## Testing
 
 ```bash
 npm test
+npm run test:types   # the README's examples compiled against the declarations
 ```
 
 The suite runs in Node with fakes for `RTCPeerConnection`, `MediaStream` and the media devices, and an in-memory signaling server that follows the backend's rules (participants with seats, a side held by one window, addressed signals), so two or three clients talk to each other through it in a test.

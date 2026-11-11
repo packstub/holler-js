@@ -106,6 +106,46 @@ describe('a call without media', () => {
     })
 })
 
+describe('media started mid-call', () => {
+    it('turns the microphone off again when the call ends while the prompt is open', async () => {
+        const { agent } = await assist()
+        const { FakeMediaStream, FakeTrack } = await import('./fakes.js')
+        const mic = new FakeTrack('audio')
+        let allow
+        devices.getUserMedia.mockImplementationOnce(() => new Promise((resolve) => { allow = resolve }))
+
+        const started = agent.startMedia('audio')
+        await settle(0)
+        await agent.hangUp()
+        allow(new FakeMediaStream([mic]))
+
+        await expect(started).rejects.toThrow(/given up/)
+        expect(mic.readyState).toBe('ended')
+        expect(agent.cameraStream).toBeNull()
+        expect(agent.localStream).toBeNull()
+    })
+
+    it('starts the next call the way the options say, not with the media the last call added', async () => {
+        const { agent } = await assist()
+        await agent.startMedia('audio')
+        await agent.hangUp()
+
+        expect(agent.media).toBe('none')
+    })
+
+    it('asks again after a refused prompt instead of keeping the old media', async () => {
+        const { agent } = await assist()
+        await agent.startMedia('audio')
+        devices.getUserMedia.mockImplementationOnce(async () => { throw Object.assign(new Error('denied'), { name: 'NotAllowedError' }) })
+
+        await expect(agent.startMedia('video')).rejects.toThrow('denied')
+        expect(agent.media).toBe('audio')
+
+        await agent.startMedia('video')
+        expect(agent.cameraStream.getVideoTracks()).toHaveLength(1)
+    })
+})
+
 describe('options', () => {
     it("refuses media: 'none' without a channel: nothing would start the connection", () => {
         expect(() => new CallClient({ signaling: server.clientFor('agent'), media: 'none' })).toThrow(/data channel/)

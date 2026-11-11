@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CallWidget, patch, templates } from '../src/widget.js'
+import { CallWidget, attachStream, escape, patch, safeUrl, templates } from '../src/widget.js'
 import { FakeServer, FakeTrack, installBrowserGlobals } from './fakes.js'
 
 let server
@@ -62,7 +62,7 @@ describe('the widget', () => {
 
         expect(document.body.lastElementChild).toBe(ion.el)
         expect(ion.el.className).toBe('calls')
-        expect([...ion.el.children].every((slot) => slot.hidden)).toBe(true)
+        expect([...ion.el.querySelectorAll('.calls-slot')].every((slot) => slot.hidden)).toBe(true)
         expect(ion.state).toBe('idle')
     })
 
@@ -375,5 +375,132 @@ describe('the widget', () => {
 
     it('ships the default templates for anyone building on them', () => {
         expect(Object.keys(templates)).toEqual(['incoming', 'chip', 'window', 'tile', 'notice'])
+    })
+})
+
+describe('autoplay', () => {
+    it('plays muted when the browser wants a click first, and turns the sound on with the first click', async () => {
+        const refused = Object.assign(new Error('play() needs a user gesture'), { name: 'NotAllowedError' })
+        const play = vi.fn(function () { return this.muted || play.allowed ? Promise.resolve() : Promise.reject(refused) })
+        HTMLMediaElement.prototype.play = play
+        const video = document.createElement('video')
+        document.body.appendChild(video)
+
+        attachStream(video, { id: 'remote' })
+        await settle(0)
+        expect(video.muted).toBe(true)
+        expect(play).toHaveBeenCalledTimes(2)
+
+        play.allowed = true
+        document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        await settle(0)
+        expect(video.muted).toBe(false)
+        expect(play).toHaveBeenCalledTimes(3)
+
+        // Only once: a later click plays nothing again.
+        document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+        expect(play).toHaveBeenCalledTimes(3)
+    })
+})
+
+describe('avatars', () => {
+    it('only takes image URLs from the server: never javascript: or another scheme', () => {
+        const root = document.createElement('div')
+        root.setAttribute('data-calls-scope', '')
+        root.innerHTML = '<img data-calls-src="avatar">'
+        const img = root.querySelector('img')
+
+        for (const bad of ['javascript:alert(1)', ' JaVaScRiPt:alert(1)', 'data:text/html,<script>alert(1)</script>', 'vbscript:x']) {
+            patch(root, { avatar: bad })
+            expect(img.hasAttribute('src'), bad).toBe(false)
+        }
+
+        for (const good of ['https://cdn.example.com/a.png', '/storage/avatars/1.jpg', 'avatars/1.jpg', 'data:image/png;base64,iVBOR', 'blob:https://example.com/1']) {
+            patch(root, { avatar: good })
+            expect(img.getAttribute('src')).toBe(good)
+        }
+        expect(safeUrl(null)).toBeNull()
+
+        // An SVG avatar shows in an <img>, where no script runs; not in another element.
+        patch(root, { avatar: 'data:image/svg+xml,<svg/>' })
+        expect(img.getAttribute('src')).toBe('data:image/svg+xml,<svg/>')
+        expect(safeUrl('data:image/svg+xml,<svg/>')).toBeNull()
+    })
+})
+
+describe('accessibility', () => {
+    it('names the incoming call and every icon button, and reads the caller out', async () => {
+        const ion = widget('ion')
+        const ana = widget('ana', { callSelector: null })
+        await ion.callUser('ana')
+        await settle()
+
+        const toast = ana.views.incoming
+        expect(toast.getAttribute('role')).toBe('alertdialog')
+        expect(toast.getAttribute('aria-label')).toBe('Ion Caliman is calling you')
+        expect(ana.el.querySelector('.calls-live').textContent).toBe('Ion Caliman is calling you')
+        for (const button of ana.el.querySelectorAll('button')) expect(button.getAttribute('aria-label')).toBeTruthy()
+    })
+
+    it('keeps focus in the widget when Accept goes away, on the first call control rather than hang up', async () => {
+        const ion = widget('ion')
+        const ana = widget('ana', { callSelector: null })
+        await ion.callUser('ana')
+        await settle()
+
+        const accept = ana.el.querySelector('[data-calls-action="accept"]')
+        accept.focus()
+        accept.click()
+        await settle()
+
+        expect(document.activeElement.getAttribute('data-calls-action')).toBe('toggleMute')
+        expect(ana.views.window.getAttribute('aria-label')).toBe('Ion Caliman')
+
+        ana.el.querySelector('[data-calls-action="toggleMute"]').click()
+        expect(document.activeElement.getAttribute('aria-label')).toBe('Unmute')
+    })
+
+    it('reads notices out through a live region that is there before the text', async () => {
+        const ion = widget('ion')
+        const live = ion.el.querySelector('.calls-live')
+        expect(live.getAttribute('aria-live')).toBe('polite')
+
+        ion.show('Call ended')
+        await settle(100)
+
+        expect(live.textContent).toBe('Call ended')
+        expect(ion.views.notice.hasAttribute('role')).toBe(false)
+    })
+})
+
+describe('screen share', () => {
+    it('offers no share button where the browser cannot share a screen (phones)', async () => {
+        const { ion, ana } = await connected()
+        const share = (instance) => instance.el.querySelector('[data-calls-action="toggleShare"]')
+        expect(share(ion).hidden).toBe(false)
+
+        delete navigator.mediaDevices.getDisplayMedia
+        ana.render()
+
+        expect(share(ana).hidden).toBe(true)
+    })
+})
+
+describe('the pop-out URL', () => {
+    it('names the call this window runs, also when the old URL named a call whose id starts the same', async () => {
+        // A pop-out whose URL still names call 12 (long over) rings Ana: the new call is call 1.
+        history.replaceState(null, '', '/calls/window?call=12&callee=ana')
+        const popOut = widget('ion', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__', openedFor: { callee: 'ana', trusted: true } })
+        await settle()
+
+        expect(popOut.client.call.id).toBe(1)
+        expect(location.search).toBe('?call=1&callee=')
+    })
+})
+
+describe('escape', () => {
+    it('makes a name safe to put into the HTML of a template of your own', () => {
+        expect(escape(`<img src=x onerror="alert('1')">&`)).toBe('&lt;img src=x onerror=&quot;alert(&#39;1&#39;)&quot;&gt;&amp;')
+        expect(escape(null)).toBe('')
     })
 })

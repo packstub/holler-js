@@ -1,58 +1,58 @@
 /*
- * @packstub/calls — the call widget. Dark on purpose, like every call window.
+ * @packstub/holler — the call widget. Dark on purpose, like every call window.
  *
- * Restyle it through the custom properties on `.calls` (set them on `:root` or on `.calls`),
- * or drop this file and write your own against the `calls-*` class names.
+ * Restyle it through the custom properties on `.holler` (set them on `:root` or on `.holler`),
+ * or drop this file and write your own against the `holler-*` class names.
  */
 
-.calls {
-    --calls-bg: #18181b;
-    --calls-fg: #fafafa;
-    --calls-dim: #a1a1aa;
-    --calls-stage: #09090b;
-    --calls-tile: #18181b;
-    --calls-control: #3f3f46;
-    --calls-control-hover: #52525b;
-    --calls-accent: #4f46e5;
-    --calls-accent-hover: #6366f1;
-    --calls-danger: #dc2626;
-    --calls-danger-hover: #ef4444;
-    --calls-success: #16a34a;
-    --calls-success-hover: #22c55e;
-    --calls-radius: 1rem;
-    --calls-width: 24rem;
-    --calls-z: 60;
-    --calls-font: inherit;
+.holler {
+    --holler-bg: #18181b;
+    --holler-fg: #fafafa;
+    --holler-dim: #a1a1aa;
+    --holler-stage: #09090b;
+    --holler-tile: #18181b;
+    --holler-control: #3f3f46;
+    --holler-control-hover: #52525b;
+    --holler-accent: #4f46e5;
+    --holler-accent-hover: #6366f1;
+    --holler-danger: #dc2626;
+    --holler-danger-hover: #ef4444;
+    --holler-success: #16a34a;
+    --holler-success-hover: #22c55e;
+    --holler-radius: 1rem;
+    --holler-width: 24rem;
+    --holler-z: 60;
+    --holler-font: inherit;
 
     position: fixed;
     inset-inline-end: 1rem;
     bottom: 1rem;
-    z-index: var(--calls-z);
+    z-index: var(--holler-z);
     display: flex;
     flex-direction: column;
     align-items: flex-end;
     gap: 0.75rem;
     pointer-events: none;
-    font-family: var(--calls-font);
+    font-family: var(--holler-font);
     font-size: 0.875rem;
     line-height: 1.4;
-    color: var(--calls-fg);
+    color: var(--holler-fg);
 }
 
-.calls-slot { display: contents; }
-.calls-slot[hidden] { display: none; }
+.holler-slot { display: contents; }
+.holler-slot[hidden] { display: none; }
 
-.calls-card {
+.holler-card {
     pointer-events: auto;
-    background: var(--calls-bg);
-    color: var(--calls-fg);
-    border-radius: var(--calls-radius);
+    background: var(--holler-bg);
+    color: var(--holler-fg);
+    border-radius: var(--holler-radius);
     box-shadow: 0 20px 40px -12px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.08);
     overflow: hidden;
 }
 
-.calls-incoming,
-.calls-chip {
+.holler-incoming,
+.holler-chip {
     display: flex;
     align-items: center;
     gap: 1.25rem;
@@ -60,9 +60,9 @@
     min-width: 20rem;
 }
 
-.calls-chip { gap: 0.75rem; min-width: 0; padding: 0.5rem 0.75rem 0.5rem 0.5rem; }
+.holler-chip { gap: 0.75rem; min-width: 0; padding: 0.5rem 0.75rem 0.5rem 0.5rem; }
 
-.calls-person {
+.holler-person {
     display: flex;
     align-items: center;
     gap: 0.75rem;
@@ -71,7 +71,7 @@
     text-align: start;
 }
 
-.calls-chip-open {
+.holler-chip-open {
     border: 0;
     background: none;
     color: inherit;
@@ -81,24 +81,24 @@
     border-radius: 0.5rem;
 }
 
-.calls-chip-open:hover { background: rgb(255 255 255 / 0.06); }
+.holler-chip-open:hover { background: rgb(255 255 255 / 0.06); }
 
-.calls-who { display: flex; flex-direction: column; min-width: 0; }
+.holler-who { display: flex; flex-direction: column; min-width: 0; }
 
-.calls-name {
+.holler-name {
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-.calls-dim {
-    color: var(--calls-dim);
+.holler-dim {
+    color: var(--holler-dim);
     font-size: 0.75rem;
     font-variant-numeric: tabular-nums;
 }
 
-.calls-avatar {
+.holler-avatar {
     width: 2.5rem;
     height: 2.5rem;
     border-radius: 9999px;
@@ -106,34 +106,34 @@
     flex: none;
 }
 
-.calls-avatar-initials {
+.holler-avatar-initials {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--calls-accent);
+    background: var(--holler-accent);
     color: #fff;
     font-weight: 600;
 }
 
-.calls-avatar-lg {
+.holler-avatar-lg {
     width: 5rem;
     height: 5rem;
     font-size: 1.5rem;
 }
 
-.calls-actions,
-.calls-controls {
+.holler-actions,
+.holler-controls {
     display: flex;
     align-items: center;
     gap: 0.5rem;
 }
 
-.calls-controls {
+.holler-controls {
     justify-content: center;
     padding: 0.75rem 1rem;
 }
 
-.calls-btn {
+.holler-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -143,39 +143,39 @@
     border-radius: 9999px;
     border: 0;
     cursor: pointer;
-    background: var(--calls-control);
-    color: var(--calls-fg);
+    background: var(--holler-control);
+    color: var(--holler-fg);
     transition: background-color 0.15s, transform 0.15s;
 }
 
-.calls-btn:hover { background: var(--calls-control-hover); }
-.calls-btn:active { transform: scale(0.95); }
-.calls-btn-off { background: var(--calls-fg); color: var(--calls-bg); }
-.calls-btn-off:hover { background: #e4e4e7; }
-.calls-btn-on { background: var(--calls-accent); }
-.calls-btn-on:hover { background: var(--calls-accent-hover); }
-.calls-btn-danger { background: var(--calls-danger); }
-.calls-btn-danger:hover { background: var(--calls-danger-hover); }
-.calls-btn-success { background: var(--calls-success); }
-.calls-btn-success:hover { background: var(--calls-success-hover); }
+.holler-btn:hover { background: var(--holler-control-hover); }
+.holler-btn:active { transform: scale(0.95); }
+.holler-btn-off { background: var(--holler-fg); color: var(--holler-bg); }
+.holler-btn-off:hover { background: #e4e4e7; }
+.holler-btn-on { background: var(--holler-accent); }
+.holler-btn-on:hover { background: var(--holler-accent-hover); }
+.holler-btn-danger { background: var(--holler-danger); }
+.holler-btn-danger:hover { background: var(--holler-danger-hover); }
+.holler-btn-success { background: var(--holler-success); }
+.holler-btn-success:hover { background: var(--holler-success-hover); }
 
-.calls-btn > span { display: inline-flex; }
-.calls-btn > span[hidden] { display: none; }
+.holler-btn > span { display: inline-flex; }
+.holler-btn > span[hidden] { display: none; }
 
-.calls-icon {
+.holler-icon {
     width: 1.25rem;
     height: 1.25rem;
     flex: none;
 }
 
-.calls-pulse { animation: calls-pulse 1.5s ease-out infinite; }
+.holler-pulse { animation: holler-pulse 1.5s ease-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-    .calls-pulse { animation: none; }
+    .holler-pulse { animation: none; }
 }
 
 /* Read by screen readers, never seen. */
-.calls-live {
+.holler-live {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -187,14 +187,14 @@
     border: 0;
 }
 
-@keyframes calls-pulse {
+@keyframes holler-pulse {
     0% { box-shadow: 0 0 0 0 rgb(34 197 94 / 0.6); }
     100% { box-shadow: 0 0 0 0.75rem rgb(34 197 94 / 0); }
 }
 
-.calls-window { width: min(var(--calls-width), calc(100vw - 2rem)); }
+.holler-window { width: min(var(--holler-width), calc(100vw - 2rem)); }
 
-.calls-header {
+.holler-header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
@@ -202,13 +202,13 @@
     padding: 0.75rem 1rem 0.5rem;
 }
 
-.calls-stage {
+.holler-stage {
     position: relative;
     aspect-ratio: 4 / 3;
-    background: var(--calls-stage);
+    background: var(--holler-stage);
 }
 
-.calls-remote {
+.holler-remote {
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -216,7 +216,7 @@
 }
 
 /* One tile per other participant: a single one fills the stage, two to four share a 2x2 grid. */
-.calls-grid {
+.holler-grid {
     display: grid;
     width: 100%;
     height: 100%;
@@ -224,23 +224,23 @@
     grid-template-columns: 1fr;
 }
 
-.calls-grid[data-count="2"],
-.calls-grid[data-count="3"],
-.calls-grid[data-count="4"] { grid-template-columns: 1fr 1fr; }
+.holler-grid[data-count="2"],
+.holler-grid[data-count="3"],
+.holler-grid[data-count="4"] { grid-template-columns: 1fr 1fr; }
 
-.calls-grid[data-count="2"] { grid-template-rows: 1fr; }
+.holler-grid[data-count="2"] { grid-template-rows: 1fr; }
 
-.calls-tile {
+.holler-tile {
     position: relative;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background: var(--calls-tile);
+    background: var(--holler-tile);
 }
 
-.calls-grid[data-count="2"] .calls-avatar-lg,
-.calls-grid[data-count="3"] .calls-avatar-lg,
-.calls-grid[data-count="4"] .calls-avatar-lg {
+.holler-grid[data-count="2"] .holler-avatar-lg,
+.holler-grid[data-count="3"] .holler-avatar-lg,
+.holler-grid[data-count="4"] .holler-avatar-lg {
     width: 3rem;
     height: 3rem;
     font-size: 1rem;
@@ -248,36 +248,36 @@
 
 /* A shared screen has the stage: its tile is the spotlight, shown whole, and the cameras
    line up in a strip on top (a tall stage) or on the right (a wide one). */
-.calls-stage[data-spotlight] .calls-grid {
+.holler-stage[data-spotlight] .holler-grid {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
 }
 
-.calls-stage[data-spotlight][data-strip="top"] .calls-grid {
+.holler-stage[data-spotlight][data-strip="top"] .holler-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     grid-template-rows: max(5.25rem, 22%) minmax(0, 1fr);
 }
 
-.calls-stage[data-spotlight][data-strip="right"] .calls-grid {
+.holler-stage[data-spotlight][data-strip="right"] .holler-grid {
     grid-template-columns: minmax(0, 1fr) max(7rem, 22%);
     grid-template-rows: repeat(3, minmax(0, 1fr));
 }
 
-.calls-tile[data-role="spotlight"] { grid-area: 1 / 1 / -1 / -1; background: var(--calls-stage); }
-.calls-stage[data-strip="top"] .calls-tile[data-role="spotlight"] { grid-area: 2 / 1 / 3 / -1; }
-.calls-stage[data-strip="right"] .calls-tile[data-role="spotlight"] { grid-area: 1 / 1 / -1 / 2; }
-.calls-stage[data-strip="top"] .calls-tile[data-role="strip"] { grid-row: 1; }
-.calls-stage[data-strip="right"] .calls-tile[data-role="strip"] { grid-column: 2; }
+.holler-tile[data-role="spotlight"] { grid-area: 1 / 1 / -1 / -1; background: var(--holler-stage); }
+.holler-stage[data-strip="top"] .holler-tile[data-role="spotlight"] { grid-area: 2 / 1 / 3 / -1; }
+.holler-stage[data-strip="right"] .holler-tile[data-role="spotlight"] { grid-area: 1 / 1 / -1 / 2; }
+.holler-stage[data-strip="top"] .holler-tile[data-role="strip"] { grid-row: 1; }
+.holler-stage[data-strip="right"] .holler-tile[data-role="strip"] { grid-column: 2; }
 
-.calls-tile[data-role="spotlight"] .calls-remote { object-fit: contain; }
-.calls-tile[data-role="strip"] .calls-avatar-lg { width: 2.25rem; height: 2.25rem; font-size: 0.875rem; }
-.calls-tile[data-role="strip"] .calls-tile-name { left: 0.25rem; bottom: 0.25rem; padding: 0.1rem 0.4rem; font-size: 0.625rem; }
-.calls-tile[data-role="strip"] .calls-badges { display: none; }
+.holler-tile[data-role="spotlight"] .holler-remote { object-fit: contain; }
+.holler-tile[data-role="strip"] .holler-avatar-lg { width: 2.25rem; height: 2.25rem; font-size: 0.875rem; }
+.holler-tile[data-role="strip"] .holler-tile-name { left: 0.25rem; bottom: 0.25rem; padding: 0.1rem 0.4rem; font-size: 0.625rem; }
+.holler-tile[data-role="strip"] .holler-badges { display: none; }
 
-.calls-stage[data-spotlight] .calls-local { width: 18%; }
-.calls-stage[data-strip="right"] .calls-local { right: auto; left: 0.5rem; }
+.holler-stage[data-spotlight] .holler-local { width: 18%; }
+.holler-stage[data-strip="right"] .holler-local { right: auto; left: 0.5rem; }
 
-.calls-tile-name {
+.holler-tile-name {
     position: absolute;
     left: 0.5rem;
     bottom: 0.5rem;
@@ -293,7 +293,7 @@
     pointer-events: none;
 }
 
-.calls-placeholder {
+.holler-placeholder {
     position: absolute;
     inset: 0;
     display: flex;
@@ -301,7 +301,7 @@
     justify-content: center;
 }
 
-.calls-local {
+.holler-local {
     position: absolute;
     right: 0.5rem;
     bottom: 0.5rem;
@@ -309,14 +309,14 @@
     aspect-ratio: 4 / 3;
     object-fit: cover;
     border-radius: 0.5rem;
-    background: var(--calls-control);
+    background: var(--holler-control);
     box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
 }
 
-.calls-mirror { transform: scaleX(-1); }
-.calls-hidden { display: none; }
+.holler-mirror { transform: scaleX(-1); }
+.holler-hidden { display: none; }
 
-.calls-badges {
+.holler-badges {
     position: absolute;
     top: 0.5rem;
     left: 0.5rem;
@@ -326,7 +326,7 @@
     pointer-events: none;
 }
 
-.calls-badge {
+.holler-badge {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
@@ -338,23 +338,23 @@
     backdrop-filter: blur(4px);
 }
 
-.calls-badge .calls-icon { width: 0.875rem; height: 0.875rem; }
+.holler-badge .holler-icon { width: 0.875rem; height: 0.875rem; }
 
-.calls-notice {
+.holler-notice {
     padding: 0.625rem 1rem;
     font-size: 0.8125rem;
 }
 
-.calls [hidden] { display: none !important; }
+.holler [hidden] { display: none !important; }
 
 @media (max-width: 640px) {
-    .calls { inset-inline: 1rem; align-items: stretch; }
-    .calls-incoming { min-width: 0; }
-    .calls-window { width: auto; }
+    .holler { inset-inline: 1rem; align-items: stretch; }
+    .holler-incoming { min-width: 0; }
+    .holler-window { width: auto; }
 }
 
 /* The pop-out page: the widget is the whole window. */
-.calls-popup {
+.holler-popup {
     position: static;
     align-items: stretch;
     height: 100vh;
@@ -362,9 +362,9 @@
     padding: 0;
 }
 
-.calls-popup .calls-slot-window { display: contents; }
+.holler-popup .holler-slot-window { display: contents; }
 
-.calls-popup .calls-window {
+.holler-popup .holler-window {
     width: auto;
     flex: 1;
     display: flex;
@@ -372,7 +372,7 @@
     border-radius: 0;
 }
 
-.calls-popup .calls-stage {
+.holler-popup .holler-stage {
     flex: 1;
     /* The videos must not grow the stage past the window: it shrinks to what is left. */
     min-height: 0;
@@ -380,5 +380,5 @@
     aspect-ratio: auto;
 }
 
-.calls-popup .calls-incoming,
-.calls-popup .calls-notice { margin: 1rem; }
+.holler-popup .holler-incoming,
+.holler-popup .holler-notice { margin: 1rem; }

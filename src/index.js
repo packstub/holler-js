@@ -1,5 +1,5 @@
 /**
- * @packstub/calls — WebRTC calls for the browser, 1-on-1 and small groups, with a
+ * @packstub/holler — WebRTC calls for the browser, 1-on-1 and small groups, with a
  * pluggable signaling backend and a pluggable topology.
  *
  * Framework-agnostic: no DOM, no Alpine, no Laravel. A CallClient owns the local

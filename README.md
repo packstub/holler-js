@@ -1,6 +1,6 @@
-# @packstub/calls
+# @packstub/holler
 
-WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small groups, with a pluggable signaling backend and a pluggable topology. The engine behind [Calls for Laravel](https://github.com/packstub/calls) and [Filament Calls](https://github.com/packstub/filament-calls): plain ES modules, no build step, no dependencies. The engine (`@packstub/calls`) has no DOM and no framework; [`CallWidget`](#the-widget) (`@packstub/calls/widget`) is a ready-made UI on top of it.
+WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small groups, with a pluggable signaling backend and a pluggable topology. The engine behind [Holler for Laravel](https://github.com/packstub/holler) and [Filament Holler](https://github.com/packstub/filament-holler): plain ES modules, no build step, no dependencies. The engine (`@packstub/holler`) has no DOM and no framework; [`CallWidget`](#the-widget) (`@packstub/holler/widget`) is a ready-made UI on top of it.
 
 - `CallClient` owns the local media and the roster of a call: who is in, who is ringing, who muted, whose media flows. Perfect negotiation per pair (the lower seat offers), ICE candidates applied in order, screen share by track replacement, voice fallback when there is no camera, mute and camera off.
 - `MeshTopology` is how media travels by default: a direct `RTCPeerConnection` to every other participant, so no server touches the media. Right for up to four people; the `topology` option takes an SFU or relay adapter for bigger rooms, and the client never knows the difference.
@@ -11,7 +11,7 @@ WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small grou
 ## Install
 
 ```bash
-npm install @packstub/calls
+npm install @packstub/holler
 ```
 
 TypeScript declarations ship with the package (`src/index.d.ts`, `src/widget.d.ts`), including the typed events of `CallClient`.
@@ -19,7 +19,7 @@ TypeScript declarations ship with the package (`src/index.d.ts`, `src/widget.d.t
 ## Use
 
 ```js
-import { CallClient, HttpSignaling } from '@packstub/calls'
+import { CallClient, HttpSignaling } from '@packstub/holler'
 
 const client = new CallClient({
     signaling: new HttpSignaling({
@@ -69,7 +69,7 @@ window.addEventListener('pagehide', () => client.leave())
 A call can carry data next to (or instead of) audio and video: name the channels and listen for them. With `media: 'none'` nothing asks for the camera or the microphone; the channel itself starts the connection, and `startMedia('audio')` (or `'video'`) adds media later, renegotiating each connection.
 
 ```js
-import { CallClient, drain } from '@packstub/calls'
+import { CallClient, drain } from '@packstub/holler'
 
 const client = new CallClient({ signaling, media: 'none', channels: ['assist'] })
 
@@ -156,7 +156,7 @@ Polls that fail (the server down, the network gone) are reported as `error` and 
 A topology owns the connections; the client owns everything else (media, roster, signaling, states). `MeshTopology` ships: one `RTCPeerConnection` per peer, each participant uploads one copy of its media per peer, which is what makes four the sensible ceiling. For bigger rooms, an SFU or a relay adapter implements the same interface, and it can be chosen per call:
 
 ```js
-import { CallClient, MeshTopology } from '@packstub/calls'
+import { CallClient, MeshTopology } from '@packstub/holler'
 
 new CallClient({
     maxParticipants: 20,
@@ -199,7 +199,7 @@ leave(callId, tab)                   → void     // optional, a beacon as the p
 configuration()                      → { iceServers, iceTransportPolicy }   // optional, ICE servers asked per call
 ```
 
-A failed request rejects with an `Error` carrying `status` and, from Calls for Laravel, `reason` (`busy`, `not_ringing`, `not_allowed`, `full`, `ended`, `too_large`): the two 409s (busy, no longer ringing) are told apart by it.
+A failed request rejects with an `Error` carrying `status` and, from Holler for Laravel, `reason` (`busy`, `not_ringing`, `not_allowed`, `full`, `ended`, `too_large`): the two 409s (busy, no longer ringing) are told apart by it.
 
 A `call` is `{ id, kind, status: 'ringing' | 'active' | 'ended', end_reason, role: 'caller' | 'callee', seat, joined, peers, answered_at, held }` plus `peer`, `peer_held` and `peer_seen_ago` for the first peer. `peers` lists every other participant as `{ id, name, avatar, seat, status: 'ringing' | 'joined' | 'left' | 'declined' | 'missed' | 'dropped', held, seen_ago }`. `seat` is the order people were invited in (the caller has 0); between two participants the lower seat makes the offer. `joined` is whether I am in (false while the call rings me). `held` means another window of mine holds my side; a peer's `held` that it has a live window on the call.
 
@@ -220,15 +220,15 @@ A signal is `{ id, call, type, payload, from }`, `from` being the sender's user 
 | `timeout` | `10000` | milliseconds before a request is given up, so one stalled poll or signal cannot stop the rest |
 | `fetch` | `globalThis.fetch` | your own fetch |
 
-`start` posts `{ callee, tab }` for one person and `{ callees, tab }` for a group; `send` adds `to` when set; `invite` posts `{ callee }`. [Calls for Laravel](https://github.com/packstub/calls) implements the server side; the README there documents the endpoints for other backends.
+`start` posts `{ callee, tab }` for one person and `{ callees, tab }` for a group; `send` adds `to` when set; `invite` posts `{ callee }`. [Holler for Laravel](https://github.com/packstub/holler) implements the server side; the README there documents the endpoints for other backends.
 
 ## The widget
 
 `CallWidget` is the UI over `CallClient`, plain DOM, no framework: the incoming-call toast, the call window (a tile per other participant with their video or avatar, your own picture, mute, camera, screen share, hang up), the chip shown while a pop-out window runs the call, and notices. A shared screen takes the stage with the cameras in a strip on top or on the right, wherever it gets more room.
 
 ```js
-import { CallWidget } from '@packstub/calls/widget'
-import '@packstub/calls/widget.css'
+import { CallWidget } from '@packstub/holler/widget'
+import '@packstub/holler/widget.css'
 
 const widget = new CallWidget({
     routes, csrf,                       // an HttpSignaling is made from these (or pass `signaling`, or a `client` of your own)
@@ -251,21 +251,21 @@ const widget = new CallWidget({
 | `inPopOut` | `false` | this page is the pop-out |
 | `openedFor` | read from the URL | what the pop-out does on load, `{ call }` or `{ callee }` |
 | `windowFeatures` | `'popup=yes,width=460,height=620'` | `window.open` features for the pop-out |
-| `callSelector` | `'[data-calls-call]'` | elements that ring someone on click (`null`: none) |
+| `callSelector` | `'[data-holler-call]'` | elements that ring someone on click (`null`: none) |
 | `labels`, `templates`, `icons` | the exported `labels`, `templates`, `icons` | override any of them |
 | `startPolling` | `true` | start at once; `false` to change things first and call `start()` yourself |
 
-Any element with `data-calls-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `calls:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script (`announce(text)` only tells a screen reader). Every client event is dispatched again on the widget's element as `calls:<type>` (bubbling), plus `calls:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
+Any element with `data-holler-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `holler:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script (`announce(text)` only tells a screen reader). Every client event is dispatched again on the widget's element as `holler:<type>` (bubbling), plus `holler:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
 
 Three ways to make it yours:
 
-- **CSS.** Every class is `calls-*`; the colours and sizes are custom properties on `.calls` (`--calls-bg`, `--calls-fg`, `--calls-dim`, `--calls-accent`, `--calls-danger`, `--calls-success`, `--calls-stage`, `--calls-radius`, `--calls-width`, `--calls-z`, `--calls-font`). Skip `widget.css` and write your own against the class names when that is not enough.
-- **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-calls-text="key"`, `data-calls-show="key"` (or `"!key"`), `data-calls-class="name:key …"`, `data-calls-attr="name:key …"`, `data-calls-src="key"`, `data-calls-video="key"` (a MediaStream) and `data-calls-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|focusWindow"`. The root of a template carries `data-calls-scope`; the window's needs `data-calls-ref="grid"` for the tiles and `data-calls-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `startPolling: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `role`).
+- **CSS.** Every class is `holler-*`; the colours and sizes are custom properties on `.holler` (`--holler-bg`, `--holler-fg`, `--holler-dim`, `--holler-accent`, `--holler-danger`, `--holler-success`, `--holler-stage`, `--holler-radius`, `--holler-width`, `--holler-z`, `--holler-font`). Skip `widget.css` and write your own against the class names when that is not enough.
+- **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-holler-text="key"`, `data-holler-show="key"` (or `"!key"`), `data-holler-class="name:key …"`, `data-holler-attr="name:key …"`, `data-holler-src="key"`, `data-holler-video="key"` (a MediaStream) and `data-holler-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|focusWindow"`. The root of a template carries `data-holler-scope`; the window's needs `data-holler-ref="grid"` for the tiles and `data-holler-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `startPolling: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `role`).
 - **Subclass.** `model()`, `tileModel()`, `render()`, `renderTiles()`, `placeStrip()` and the actions are methods on `CallWidget`.
 
 The module also exports `labels`, `templates` and `icons` (the defaults), `patch(root, model)` (applies the hooks to a piece of markup), `attachStream(video, stream)`, `fill(label, values)` (fills in `:name` and the like), `escape(text)` and `safeUrl(url)`, for templates and subclasses of your own.
 
-Names and avatars come from the server and are whatever people typed. The default templates never put them into the HTML: they reach the page through the hooks (`data-calls-text` sets text, `data-calls-src` takes only http(s), relative, `blob:` and `data:image/` URLs). A template of your own that writes a value from the model into its HTML string must pass it through `escape()` first.
+Names and avatars come from the server and are whatever people typed. The default templates never put them into the HTML: they reach the page through the hooks (`data-holler-text` sets text, `data-holler-src` takes only http(s), relative, `blob:` and `data:image/` URLs). A template of your own that writes a value from the model into its HTML string must pass it through `escape()` first.
 
 `CallClient` methods not documented here (`tick`, `schedule`, `interval`, `backoff`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
 

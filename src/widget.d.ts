@@ -1,6 +1,6 @@
 // Type declarations for @packstub/holler/widget: the public API the README documents.
 
-import type { CallClient, CallState, HttpSignalingRoutes, Peer, Signaling, UserId } from './index.js'
+import type { CallClient, CallState, DeviceKind, HttpSignalingRoutes, Peer, Signaling, UserId } from './index.js'
 
 /** A view: a function from the view model to an HTML string, kept current through the data-holler-* hooks. */
 export type Template<M = WidgetModel> = (model: M) => string
@@ -47,6 +47,12 @@ export interface WidgetModel {
     muteTitle: string
     cameraTitle: string
     shareTitle: string
+    canSettings: boolean
+    settingsOpen: boolean
+    hasMicrophones: boolean
+    hasCameras: boolean
+    hasSpeakers: boolean
+    canNotify: boolean
     [key: string]: unknown
 }
 
@@ -59,6 +65,8 @@ export interface TileModel extends Peer {
     showVideo: boolean
     showName: boolean
     cameraOffBadge: boolean
+    /** Connected, with a weak connection. */
+    poor: boolean
     role: string
     labels: WidgetLabels
     icons: WidgetIcons
@@ -88,6 +96,12 @@ export interface CallWidgetOptions {
     templates?: Partial<WidgetTemplates>
     icons?: Partial<WidgetIcons>
     startPolling?: boolean
+    /** The settings button in the call window: microphone, camera, speaker (true). */
+    devices?: boolean
+    /** A call ringing in a background tab shows in the tab's title, and as a system notification once allowed (true). */
+    notifications?: boolean
+    /** Where the chosen devices are remembered in localStorage (`holler:devices`); null: not remembered. */
+    storageKey?: string | null
 }
 
 export class CallWidget extends EventTarget {
@@ -113,6 +127,13 @@ export class CallWidget extends EventTarget {
     toggleMute(): void
     toggleCamera(): void
     toggleShare(): Promise<void>
+    toggleSettings(): void
+    setDevice(kind: DeviceKind, id: string | null): Promise<void>
+    refreshDevices(): Promise<void>
+    /** Whether the person can still be asked to allow system notifications. */
+    readonly canNotify: boolean
+    /** Ask for system notifications; call it from a click. */
+    enableNotifications(): Promise<NotificationPermission>
     show(text: string): void
     announce(text: string): void
 

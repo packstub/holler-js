@@ -340,6 +340,48 @@
 
 .holler-badge .holler-icon { width: 0.875rem; height: 0.875rem; }
 
+.holler-badge-warn { background: rgb(180 83 9 / 0.9); }
+
+/* The microphone, the camera and the speaker, between the stage and the controls. */
+.holler-settings {
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem 0;
+}
+
+.holler-field {
+    display: grid;
+    grid-template-columns: 6rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--holler-dim);
+    font-size: 0.75rem;
+}
+
+.holler-select {
+    min-width: 0;
+    padding: 0.375rem 0.5rem;
+    border: 0;
+    border-radius: 0.5rem;
+    background: var(--holler-control);
+    color: var(--holler-fg);
+    font: inherit;
+    font-size: 0.8125rem;
+    text-overflow: ellipsis;
+}
+
+.holler-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--holler-fg);
+    font: inherit;
+    font-size: 0.75rem;
+    text-align: start;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
 .holler-notice {
     padding: 0.625rem 1rem;
     font-size: 0.8125rem;

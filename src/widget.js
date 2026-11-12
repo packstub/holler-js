@@ -3,8 +3,10 @@
  *
  * One object draws everything a call needs on top of a CallClient: the incoming-call
  * toast, the call window (a tile per other participant, your own picture, mute, camera,
- * screen share, hang up), the chip shown while a pop-out window runs the call, and short
- * notices. Any element with `data-holler-call="<user id>"` rings that person, or adds them
+ * screen share, settings for the microphone, camera and speaker, hang up), the chip shown
+ * while a pop-out window runs the call, and short notices. A call that rings while the tab
+ * is in the background shows in the tab's title and, once the person allowed it
+ * (`enableNotifications()`, or the link in the settings), as a system notification. Any element with `data-holler-call="<user id>"` rings that person, or adds them
  * to the call you are on.
  *
  *   import { CallWidget } from '@packstub/holler/widget'
@@ -24,6 +26,9 @@
  * Events: every CallClient event is dispatched again on the widget's element as
  * `holler:<type>` (bubbling, so `document.addEventListener('holler:ended', …)` works),
  * plus `holler:sharing` { peer, sharing, spotlight } when someone's screen takes the stage.
+ *
+ * The chosen microphone, camera and speaker are remembered in this browser (localStorage,
+ * `storageKey`); nothing about them goes to the server.
  */
 
 import { CallClient, HttpSignaling } from './index.js'
@@ -32,6 +37,12 @@ const ACTIVE_STATES = ['calling', 'connecting', 'active', 'reconnecting']
 
 // A pop-out that stopped holding the call for this long is gone, not reloading: the main page takes the call back.
 const TAKE_BACK_DELAY = 3000
+
+// Where the chosen microphone, camera and speaker are remembered, per browser.
+const DEVICES_KEY = 'holler:devices'
+
+// How fast the tab's title alternates while a call rings in the background.
+const TITLE_FLASH = 1000
 
 // The one-time tokens a page leaves for the pop-out it opens, and how long one is good for.
 const OPEN_TOKEN_KEY = 'holler:open:'
@@ -48,6 +59,8 @@ export const icons = {
     cameraOff: svg('<path stroke-linecap="round" stroke-linejoin="round" d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M12 18.75H4.5a2.25 2.25 0 0 1-2.25-2.25V9m12.841 9.091L16.5 19.5m-1.409-1.409c.407-.407.659-.97.659-1.591v-9a2.25 2.25 0 0 0-2.25-2.25h-9c-.621 0-1.184.252-1.591.659m12.182 12.182L2.909 5.909M1.5 4.5l1.409 1.409" />'),
     screen: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25" />'),
     speakerOff: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />'),
+    settings: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />'),
+    signal: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />'),
     window: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />'),
 }
 
@@ -89,6 +102,14 @@ export const labels = {
     ended_dropped: 'Connection lost',
     ended_busy: 'Busy',
     no_media: 'Could not access your camera or microphone.',
+    settings: 'Settings',
+    microphone: 'Microphone',
+    camera: 'Camera',
+    speaker: 'Speaker',
+    default_device: 'System default',
+    device_failed: 'Could not switch to that device.',
+    notify: 'Notify me about calls when this tab is in the background',
+    quality_poor: 'Weak connection',
 }
 
 /** Text made safe to put into HTML: what a template of your own does with a name or anything else from the server. */
@@ -138,18 +159,25 @@ export const templates = {
                 <div class="holler-grid" data-holler-ref="grid" data-holler-attr="data-count:count"></div>
                 <video autoplay playsinline muted class="holler-local" aria-label="${escape(v.labels.you)}" data-holler-video="localStream" data-holler-class="holler-mirror:mirror holler-hidden:hideLocal"></video>
             </div>
+            <div class="holler-settings" data-holler-ref="settings" data-holler-show="settingsOpen">
+                <label class="holler-field" data-holler-show="hasMicrophones"><span>${escape(v.labels.microphone)}</span><select class="holler-select" data-holler-device="microphone"></select></label>
+                <label class="holler-field" data-holler-show="hasCameras"><span>${escape(v.labels.camera)}</span><select class="holler-select" data-holler-device="camera"></select></label>
+                <label class="holler-field" data-holler-show="hasSpeakers"><span>${escape(v.labels.speaker)}</span><select class="holler-select" data-holler-device="speaker"></select></label>
+                <button type="button" class="holler-link" data-holler-action="enableNotifications" data-holler-show="canNotify">${escape(v.labels.notify)}</button>
+            </div>
             <div class="holler-controls">
                 <button type="button" class="holler-btn" data-holler-action="toggleMute" data-holler-class="holler-btn-off:muted" data-holler-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
                 <button type="button" class="holler-btn" data-holler-action="toggleCamera" data-holler-class="holler-btn-off:cameraOff" data-holler-attr="title:cameraTitle aria-label:cameraTitle">
                     <span data-holler-show="!cameraOff">${v.icons.camera}</span><span data-holler-show="cameraOff">${v.icons.cameraOff}</span>
                 </button>
                 <button type="button" class="holler-btn" data-holler-action="toggleShare" data-holler-show="canShare" data-holler-class="holler-btn-on:sharing" data-holler-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
+                <button type="button" class="holler-btn" data-holler-action="toggleSettings" data-holler-show="canSettings" data-holler-class="holler-btn-on:settingsOpen" data-holler-attr="aria-expanded:settingsExpanded" title="${escape(v.labels.settings)}" aria-label="${escape(v.labels.settings)}">${v.icons.settings}</button>
                 <button type="button" class="holler-btn holler-btn-danger" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
             </div>
         </div>`,
 
     tile: (v) => `
-        <div class="holler-tile" data-holler-scope data-holler-attr="data-peer-id:id data-peer-status:status data-role:role">
+        <div class="holler-tile" data-holler-scope data-holler-attr="data-peer-id:id data-peer-status:status data-role:role data-quality:quality">
             <video autoplay playsinline class="holler-remote" data-holler-video="stream" data-holler-class="holler-hidden:!showVideo"></video>
             <div class="holler-placeholder" data-holler-show="!showVideo">
                 <img class="holler-avatar holler-avatar-lg" alt="" data-holler-src="avatar" data-holler-show="hasAvatar">
@@ -164,6 +192,7 @@ export const templates = {
                 <span class="holler-badge" data-holler-show="muted" data-peer="muted">${v.icons.speakerOff} ${escape(v.labels.peer_muted)}</span>
                 <span class="holler-badge" data-holler-show="sharing" data-peer="sharing">${v.icons.screen} ${escape(v.labels.peer_sharing)}</span>
                 <span class="holler-badge" data-holler-show="cameraOffBadge" data-peer="camera-off">${v.icons.cameraOff} ${escape(v.labels.peer_camera_off)}</span>
+                <span class="holler-badge holler-badge-warn" data-holler-show="poor" data-peer="quality">${v.icons.signal} ${escape(v.labels.quality_poor)}</span>
             </div>
         </div>`,
 
@@ -374,6 +403,9 @@ export class CallWidget extends EventTarget {
      * @param {boolean} [options.startPolling]  start polling at once (true)
      * @param {string} [options.kind]  the kind of calls this widget draws (`call`); other packages' calls never reach it
      * @param {'all'|'relay'} [options.iceTransportPolicy]
+     * @param {boolean} [options.devices]  the settings button in the call window, to choose the microphone, camera and speaker (true)
+     * @param {boolean} [options.notifications]  show a call that rings while the tab is in the background in the tab's title, and as a system notification once allowed (true)
+     * @param {string|null} [options.storageKey]  the localStorage key the chosen devices are remembered under (`holler:devices`; null: not remembered)
      */
     constructor(options = {}) {
         super()
@@ -381,8 +413,12 @@ export class CallWidget extends EventTarget {
             client = null, signaling = null, routes = null, csrf = null, iceServers = null, video = true, poll, reconnectTimeout, maxParticipants,
             root = document.body, windowUrl = null, inPopOut = false, popOut = windowUrl !== null, openedFor = null,
             windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-holler-call]', startPolling = true,
-            kind = 'call', iceTransportPolicy = 'all',
+            kind = 'call', iceTransportPolicy = 'all', devices = true, notifications = true, storageKey = DEVICES_KEY,
         } = options
+
+        this.devicesEnabled = Boolean(devices)
+        this.notifications = Boolean(notifications)
+        this.storageKey = storageKey
 
         this.labels = { ...labels, ...(options.labels ?? {}) }
         this.templates = { ...templates, ...(options.templates ?? {}) }
@@ -407,6 +443,7 @@ export class CallWidget extends EventTarget {
             // Fresh servers (and short-lived TURN credentials) for every call when the backend hands them out.
             iceServers: iceServers ?? (adapter.configuration ? () => adapter.configuration().then((rtc) => rtc.iceServers) : []),
             iceTransportPolicy, video, poll, reconnectTimeout, maxParticipants,
+            devices: this.loadDevices(),
             // A page that leaves calls to the pop-out never takes one over itself.
             resumes: ! this.popOut,
         })
@@ -432,6 +469,11 @@ export class CallWidget extends EventTarget {
         this.clockSince = null
         this.closeTimer = null
         this.sharingPeers = new Map()
+        this.settingsOpen = false
+        this.deviceList = { microphones: [], cameras: [], speakers: [] }
+        this.titleTimer = null
+        this.titleBefore = null
+        this.notification = null
 
         this.mount(root)
         this.listen()
@@ -460,6 +502,10 @@ export class CallWidget extends EventTarget {
         this.el.addEventListener('click', (event) => {
             const button = event.target.closest('[data-holler-action]')
             if (button && this.el.contains(button)) this.act(button.getAttribute('data-holler-action'))
+        })
+        this.el.addEventListener('change', (event) => {
+            const kind = event.target.getAttribute?.('data-holler-device')
+            if (kind) this.setDevice(kind, event.target.value || null)
         })
         root.appendChild(this.el)
     }
@@ -491,6 +537,7 @@ export class CallWidget extends EventTarget {
         clearTimeout(this.takeBackTimer)
         clearTimeout(this.noticeTimer)
         clearTimeout(this.closeTimer)
+        this.clearAlert()
         this.ring.close()
         if (this.ownsClient) this.client.destroy()
         else this.client.stop()
@@ -512,6 +559,8 @@ export class CallWidget extends EventTarget {
 
             this.syncUrl()
             this.ring.stop()
+            if (state !== 'ringing') this.clearAlert()
+            if (! ACTIVE_STATES.includes(state)) this.settingsOpen = false
             if (state === 'ringing') this.ring.play('ring')
             if (state === 'calling') this.ring.play('ringback')
 
@@ -524,6 +573,7 @@ export class CallWidget extends EventTarget {
             this.call = call
             this.render()
             this.announce(this.model().incomingLabel)
+            this.alertIncoming()
         })
         this.on(client, 'update', ({ detail: { call } }) => {
             this.call = call
@@ -536,7 +586,16 @@ export class CallWidget extends EventTarget {
             this.watchWindow()
             this.render()
         })
-        this.on(client, 'localstream', () => this.render())
+        this.on(client, 'localstream', () => {
+            this.render()
+            // The browser names the devices once the camera or the microphone is allowed.
+            if (this.settingsOpen) this.refreshDevices()
+        })
+        this.on(client, 'devices', () => {
+            this.saveDevices()
+            if (this.settingsOpen) this.refreshDevices()
+            else this.render()
+        })
         this.on(client, 'peers', () => this.render())
         this.on(client, 'remotestream', () => this.render())
         this.on(client, 'peerstate', ({ detail: { peer, sharing } }) => {
@@ -573,7 +632,7 @@ export class CallWidget extends EventTarget {
         })
 
         // Everything the client says, again on the page: `holler:statechange`, `holler:ended`…
-        for (const type of ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'peers', 'peerjoined', 'peerleft', 'peerstate', 'ended', 'error']) {
+        for (const type of ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'peers', 'peerjoined', 'peerleft', 'peerstate', 'quality', 'devices', 'ended', 'error']) {
             this.on(client, type, ({ detail }) => this.emit(type, detail))
         }
 
@@ -587,6 +646,9 @@ export class CallWidget extends EventTarget {
         this.on(window, 'holler:call', (event) => this.callUser(event.detail?.user))
         // A full page load: let go of the call so this or the next page can pick it up again.
         this.on(window, 'pagehide', () => client.leave())
+        // Back on the tab: the title and the notification have done their job.
+        this.on(document, 'visibilitychange', () => { if (! document.hidden) this.clearAlert() })
+        this.on(window, 'focus', () => this.clearAlert())
     }
 
     emit(type, detail) {
@@ -597,7 +659,7 @@ export class CallWidget extends EventTarget {
     // ---- actions -------------------------------------------------------------
 
     act(name) {
-        const actions = { accept: 'accept', decline: 'decline', hangUp: 'hangUp', toggleMute: 'toggleMute', toggleCamera: 'toggleCamera', toggleShare: 'toggleShare', focusWindow: 'focusWindow' }
+        const actions = { accept: 'accept', decline: 'decline', hangUp: 'hangUp', toggleMute: 'toggleMute', toggleCamera: 'toggleCamera', toggleShare: 'toggleShare', focusWindow: 'focusWindow', toggleSettings: 'toggleSettings', enableNotifications: 'enableNotifications' }
         if (actions[name]) this[actions[name]]()
     }
 
@@ -667,6 +729,173 @@ export class CallWidget extends EventTarget {
         }
         this.sharing = this.client.sharing
         this.render()
+    }
+
+    // ---- devices --------------------------------------------------------------
+
+    /** The devices chosen last time in this browser, for the client to start with. */
+    loadDevices() {
+        if (! this.storageKey) return {}
+        try {
+            const { microphone = null, camera = null, speaker = null } = JSON.parse(localStorage.getItem(this.storageKey) ?? '{}') ?? {}
+
+            return { microphone, camera, speaker }
+        } catch {
+            return {}
+        }
+    }
+
+    saveDevices() {
+        if (! this.storageKey) return
+        try {
+            localStorage.setItem(this.storageKey, JSON.stringify(this.client.selected))
+        } catch {
+            // No storage here (a private window): the choice lasts for this page.
+        }
+    }
+
+    toggleSettings() {
+        this.settingsOpen = ! this.settingsOpen
+        this.render()
+        if (this.settingsOpen) this.refreshDevices()
+    }
+
+    /** Ask the browser what there is to choose from, and draw it. */
+    async refreshDevices() {
+        const { microphones, cameras, speakers } = await this.client.devices()
+        this.deviceList = { microphones, cameras, speakers }
+        this.render()
+    }
+
+    /** Choose a microphone, camera or speaker (null: the system default); remembered for the next call. */
+    async setDevice(kind, id) {
+        try {
+            await this.client.setDevice(kind, id)
+        } catch {
+            this.show(this.labels.device_failed)
+            this.refreshDevices()
+        }
+    }
+
+    /** Whether this browser can send the sound to a speaker of the person's choosing. */
+    get canPickSpeaker() {
+        return typeof globalThis.HTMLMediaElement?.prototype?.setSinkId === 'function'
+    }
+
+    /** The options of each device menu, redrawn only when they changed (an open menu stays open). */
+    renderDevices() {
+        const selected = this.client.selected ?? {}
+        const lists = { microphone: this.deviceList.microphones, camera: this.deviceList.cameras, speaker: this.deviceList.speakers }
+
+        for (const select of this.views.window?.querySelectorAll('[data-holler-device]') ?? []) {
+            const kind = select.getAttribute('data-holler-device')
+            const devices = lists[kind] ?? []
+            const signature = devices.map((device) => `${device.id}|${device.label}`).join('\n')
+
+            if (select.__hollerDevices !== signature) {
+                select.__hollerDevices = signature
+                select.replaceChildren(new Option(this.labels.default_device, ''), ...devices.map((device, index) => new Option(device.label || `${this.labels[kind]} ${index + 1}`, device.id)))
+            }
+
+            // A chosen device that is not listed any more (unplugged) reads as the default, which is what plays.
+            const value = devices.some((device) => device.id === selected[kind]) ? selected[kind] : ''
+            if (select.value !== value) select.value = value
+        }
+    }
+
+    /** Send the sound of every participant to the chosen speaker, where the browser can. */
+    applySpeaker() {
+        if (! this.canPickSpeaker) return
+        const speaker = this.client.selected?.speaker ?? null
+
+        for (const media of this.el.querySelectorAll('video, audio')) {
+            if ((media.__hollerSpeaker ?? null) === speaker) continue
+            media.__hollerSpeaker = speaker
+            // An unknown id (the speaker was unplugged) leaves the sound where it was.
+            try { media.setSinkId(speaker ?? '')?.catch?.(() => {}) } catch {}
+        }
+    }
+
+    // ---- a call in the background -----------------------------------------------
+
+    /** Whether the person can still be asked to allow system notifications. */
+    get canNotify() {
+        return this.notifications && typeof globalThis.Notification === 'function' && globalThis.Notification.permission === 'default'
+    }
+
+    /**
+     * Ask the person to allow system notifications for incoming calls. Browsers only show
+     * the question after a click, so call it from one: the link in the call's settings
+     * does, and so can a button of your own. Resolves to `granted`, `denied` or `default`.
+     */
+    async enableNotifications() {
+        if (typeof globalThis.Notification !== 'function') return 'denied'
+
+        let permission = globalThis.Notification.permission
+        if (permission === 'default') {
+            try {
+                // Safari once took a callback and returned nothing.
+                permission = await new Promise((resolve) => {
+                    const asked = globalThis.Notification.requestPermission(resolve)
+                    asked?.then?.(resolve, () => resolve('default'))
+                })
+            } catch {
+                permission = 'default'
+            }
+        }
+        this.render()
+
+        return permission
+    }
+
+    /** A call rings while this tab is in the background: say so in the tab's title and, when allowed, with a system notification. */
+    alertIncoming() {
+        if (! this.notifications || this.state !== 'ringing') return
+        if (! document.hidden && (document.hasFocus?.() ?? true)) return
+
+        const title = this.model().incomingLabel
+        const call = this.call
+
+        if (this.titleTimer === null) {
+            this.titleBefore = document.title
+            let on = false
+            const flash = () => {
+                on = ! on
+                document.title = on ? title : this.titleBefore
+            }
+            flash()
+            this.titleTimer = setInterval(flash, TITLE_FLASH)
+        }
+
+        if (typeof globalThis.Notification !== 'function' || globalThis.Notification.permission !== 'granted') return
+
+        try {
+            this.notification?.close()
+            // One per call across every tab of mine that is open: the tag replaces, it does not stack.
+            this.notification = new globalThis.Notification(title, {
+                tag: `holler-call-${call?.id ?? ''}`,
+                icon: safeUrl(call?.peer?.avatar, { svg: true }) ?? undefined,
+                requireInteraction: true,
+            })
+            this.notification.onclick = () => {
+                globalThis.focus?.()
+                this.clearAlert()
+            }
+        } catch {
+            // Android Chrome only notifies through a service worker: the title and the ring remain.
+            this.notification = null
+        }
+    }
+
+    clearAlert() {
+        if (this.titleTimer !== null) {
+            clearInterval(this.titleTimer)
+            this.titleTimer = null
+            document.title = this.titleBefore
+            this.titleBefore = null
+        }
+        try { this.notification?.close() } catch {}
+        this.notification = null
     }
 
     show(text) {
@@ -892,6 +1121,14 @@ export class CallWidget extends EventTarget {
             muteTitle: this.muted ? this.labels.unmute : this.labels.mute,
             cameraTitle: this.cameraOff ? this.labels.camera_on : this.labels.camera_off,
             shareTitle: this.sharing ? this.labels.stop_sharing : this.labels.share_screen,
+            // The settings
+            canSettings: this.devicesEnabled || this.canNotify,
+            settingsOpen: this.settingsOpen,
+            settingsExpanded: String(this.settingsOpen),
+            hasMicrophones: this.devicesEnabled && this.deviceList.microphones.length > 0,
+            hasCameras: this.devicesEnabled && this.deviceList.cameras.length > 0,
+            hasSpeakers: this.devicesEnabled && this.canPickSpeaker && this.deviceList.speakers.length > 0,
+            canNotify: this.canNotify,
         }
     }
 
@@ -910,6 +1147,7 @@ export class CallWidget extends EventTarget {
             showVideo,
             showName: this.peers.length > 1 || peer.status !== 'joined',
             cameraOffBadge: peer.cameraOff && ! peer.sharing,
+            poor: peer.connected && peer.quality === 'poor',
             role: spotlight ? (peer.id === spotlight ? 'spotlight' : 'strip') : null,
         }
     }
@@ -928,11 +1166,15 @@ export class CallWidget extends EventTarget {
         this.toggleView('window', this.inCall, model)
         this.toggleView('notice', Boolean(this.notice), model)
 
-        if (this.views.window) this.renderTiles(model.spotlight)
+        if (this.views.window) {
+            this.renderTiles(model.spotlight)
+            this.renderDevices()
+            this.applySpeaker()
+        }
 
         if (focused && ! focused.isConnected) {
             // The first control (mute, or the chip's open button), not hang up: an Enter too many must not end the call.
-            const next = (this.views.window ?? this.views.chip)?.querySelector('[data-holler-action]')
+            const next = [...((this.views.window ?? this.views.chip)?.querySelectorAll('[data-holler-action]') ?? [])].find((control) => ! control.closest('[hidden]'))
             if (next) next.focus()
             else if (this.focusBefore?.isConnected) this.focusBefore.focus()
         }

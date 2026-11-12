@@ -504,3 +504,200 @@ describe('escape', () => {
         expect(escape(null)).toBe('')
     })
 })
+
+describe('settings, a call in the background and the connection', () => {
+    const select = (instance, kind) => instance.el.querySelector(`[data-holler-device="${kind}"]`)
+    const choose = (instance, kind, value) => {
+        const el = select(instance, kind)
+        el.value = value
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+
+    beforeEach(() => {
+        localStorage.clear()
+        delete HTMLMediaElement.prototype.setSinkId
+        document.title = 'Orders'
+    })
+
+    afterEach(() => vi.restoreAllMocks())
+
+    it('opens the settings with the devices to choose from, the speaker only where the browser can pick one', async () => {
+        const { ion } = await connected()
+        const button = ion.el.querySelector('[data-holler-action="toggleSettings"]')
+        const panel = ion.el.querySelector('.holler-settings')
+
+        expect(panel.hidden).toBe(true)
+        expect(button.getAttribute('aria-expanded')).toBe('false')
+
+        button.click()
+        await settle()
+
+        expect(panel.hidden).toBe(false)
+        expect(button.getAttribute('aria-expanded')).toBe('true')
+        expect([...select(ion, 'microphone').options].map((option) => [option.value, option.text])).toEqual([['', 'System default'], ['mic-1', 'Built-in microphone'], ['mic-2', 'Headset']])
+        expect(select(ion, 'camera').options).toHaveLength(3)
+        expect(select(ion, 'speaker').closest('label').hidden).toBe(true)
+
+        button.click()
+        expect(panel.hidden).toBe(true)
+    })
+
+    it('switches the microphone from the menu and remembers it for the next page', async () => {
+        const { ion } = await connected()
+        ion.el.querySelector('[data-holler-action="toggleSettings"]').click()
+        await settle()
+
+        choose(ion, 'microphone', 'mic-2')
+        await settle()
+
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenLastCalledWith({ audio: { deviceId: { exact: 'mic-2' } }, video: false })
+        expect(JSON.parse(localStorage.getItem('holler:devices'))).toEqual({ microphone: 'mic-2', camera: null, speaker: null })
+        expect(select(ion, 'microphone').value).toBe('mic-2')
+
+        ion.destroy()
+        const again = widget('ion')
+        expect(again.client.selected.microphone).toBe('mic-2')
+        expect(widget('ion', { storageKey: null }).client.selected.microphone).toBeNull()
+    })
+
+    it('says so when a device cannot be opened, and shows the one still in use', async () => {
+        const { ion } = await connected()
+        ion.el.querySelector('[data-holler-action="toggleSettings"]').click()
+        await settle()
+        navigator.mediaDevices.getUserMedia.mockImplementationOnce(async () => { throw Object.assign(new Error('busy'), { name: 'NotReadableError' }) })
+
+        choose(ion, 'camera', 'cam-2')
+        await settle()
+
+        expect(ion.el.querySelector('.holler-notice').textContent).toBe('Could not switch to that device.')
+        expect(select(ion, 'camera').value).toBe('')
+    })
+
+    it('sends the sound to the chosen speaker where the browser can', async () => {
+        HTMLMediaElement.prototype.setSinkId = vi.fn(() => Promise.resolve())
+        const { ion } = await connected()
+        ion.el.querySelector('[data-holler-action="toggleSettings"]').click()
+        await settle()
+
+        expect(select(ion, 'speaker').closest('label').hidden).toBe(false)
+        expect(HTMLMediaElement.prototype.setSinkId).not.toHaveBeenCalled()
+
+        choose(ion, 'speaker', 'out-1')
+        await settle()
+
+        expect(HTMLMediaElement.prototype.setSinkId).toHaveBeenCalledWith('out-1')
+        const calls = HTMLMediaElement.prototype.setSinkId.mock.calls.length
+        ion.render()
+        expect(HTMLMediaElement.prototype.setSinkId).toHaveBeenCalledTimes(calls)
+    })
+
+    it('has no settings button with devices off and nothing to ask', async () => {
+        const { ion } = await connected({ ion: { devices: false } })
+
+        expect(ion.el.querySelector('[data-holler-action="toggleSettings"]').hidden).toBe(true)
+    })
+
+    it('flashes the title of a background tab while a call rings, and puts it back', async () => {
+        document.title = 'Orders'
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+        const ion = widget('ion')
+        const ana = widget('ana')
+        await ion.callUser('ana')
+        await settle()
+
+        expect(document.title).toBe('Ion Caliman is calling you')
+        await settle(1000)
+        expect(document.title).toBe('Orders')
+        await settle(1000)
+        expect(document.title).toBe('Ion Caliman is calling you')
+
+        await ion.hangUp()
+        await settle()
+        expect(ana.state).toBe('idle')
+        expect(document.title).toBe('Orders')
+    })
+
+    it('leaves the title alone in the tab the person is looking at, or with notifications off', async () => {
+        document.title = 'Orders'
+        vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+        const ion = widget('ion')
+        widget('ana')
+        await ion.callUser('ana')
+        await settle()
+        expect(document.title).toBe('Orders')
+        await ion.hangUp()
+        await settle()
+
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+        widget('mihai', { notifications: false })
+        await ion.callUser('mihai')
+        await settle()
+        expect(document.title).toBe('Orders')
+    })
+
+    it('shows a system notification once allowed, one per call, closed when the call stops ringing', async () => {
+        const shown = []
+        class FakeNotification {
+            static permission = 'default'
+            static requestPermission = vi.fn(async () => { FakeNotification.permission = 'granted'; return 'granted' })
+            constructor(title, options) { Object.assign(this, { title, options, closed: false }); shown.push(this) }
+            close() { this.closed = true }
+        }
+        vi.stubGlobal('Notification', FakeNotification)
+        vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+
+        const ion = widget('ion')
+        const ana = widget('ana')
+        expect(ana.canNotify).toBe(true)
+        expect(await ana.enableNotifications()).toBe('granted')
+        expect(ana.canNotify).toBe(false)
+
+        await ion.callUser('ana')
+        await settle()
+
+        expect(shown).toHaveLength(1)
+        expect(shown[0].title).toBe('Ion Caliman is calling you')
+        expect(shown[0].options.tag).toBe(`holler-call-${ana.call.id}`)
+        expect(shown[0].options.requireInteraction).toBe(true)
+
+        shown[0].onclick()
+        expect(shown[0].closed).toBe(true)
+        expect(document.title).not.toBe('Ion Caliman is calling you')
+    })
+
+    it('offers the notifications link in the settings while the person can still be asked', async () => {
+        class FakeNotification {
+            static permission = 'default'
+            static requestPermission = vi.fn(async () => { FakeNotification.permission = 'denied'; return 'denied' })
+        }
+        vi.stubGlobal('Notification', FakeNotification)
+        const { ion } = await connected()
+        ion.el.querySelector('[data-holler-action="toggleSettings"]').click()
+        await settle()
+        const link = ion.el.querySelector('[data-holler-action="enableNotifications"]')
+
+        expect(link.hidden).toBe(false)
+        link.click()
+        await settle()
+        expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1)
+        expect(link.hidden).toBe(true)
+    })
+
+    it('marks a tile whose connection is weak', async () => {
+        const { ion } = await connected({ ion: { client: undefined } })
+        const badge = () => tile(ion, 'ana').querySelector('[data-peer="quality"]')
+        expect(badge().hidden).toBe(true)
+
+        ion.client.topology.link('ana').pc.report = [
+            { id: 'T', type: 'transport', selectedCandidatePairId: 'P' },
+            { id: 'P', type: 'candidate-pair', currentRoundTripTime: 0.9 },
+        ]
+        const seen = []
+        ion.el.addEventListener('holler:quality', ({ detail }) => seen.push(detail.quality))
+        await ion.client.measure()
+
+        expect(badge().hidden).toBe(false)
+        expect(tile(ion, 'ana').dataset.quality).toBe('poor')
+        expect(seen).toEqual(['poor'])
+    })
+})

@@ -58,6 +58,7 @@ await client.accept()                     // or answer the call that is ringing
 await client.invite(danaId)               // add someone to the call, also from a tab whose pop-out runs it (canInvite() says whether one more fits)
 client.setMuted(true)                     // everyone else hears about it (peerstate)
 await client.shareScreen()
+await client.setDevice('microphone', id)  // another microphone, camera or speaker (devices() lists them)
 await client.takeOver()                   // a tab in `elsewhere` continues a call its pop-out let go of
 await client.hangUp()                     // the others go on without you; the call ends once one person is left
 
@@ -90,7 +91,7 @@ A 1-on-1 call needs none of the group pieces: `remoteVideo.srcObject = stream` o
 
 `idle`, `calling`, `ringing`, `connecting`, `active`, `reconnecting`, `elsewhere` (another window of the same person holds the call, for a tab that shows a chip while a pop-out runs the call).
 
-A call is `active` while media flows from at least one peer whose window is alive, and `reconnecting` when it flows from none; it ends as `dropped` after `reconnectTimeout` in that state. In a group a single peer who went quiet shows as not `alive` on the roster while the call stays `active` for everyone else.
+A call is `active` while media flows from at least one peer whose window is alive, and `reconnecting` when it flows from none; it ends as `dropped` after `reconnectTimeout` in that state. A call whose media never flowed stays `connecting` for that long and ends as `failed` on both sides: the browsers found no path to each other, which on a strict NAT, a VPN or a corporate network means the call needs a TURN server among the `iceServers` (the client says so in the console when none is configured). In a group a single peer who went quiet shows as not `alive` on the roster while the call stays `active` for everyone else.
 
 ### Events
 
@@ -106,10 +107,12 @@ A call is `active` while media flows from at least one peer whose window is aliv
 | `peerleft` | `{ peer, reason }` | a peer is gone: `left`, `declined`, `missed` (never answered) or `dropped` (away too long) |
 | `peerstate` | `{ peer, muted, cameraOff, sharing }` | a peer muted, turned the camera off or started sharing the screen |
 | `datachannel` | `{ peer, channel, label }` | a data channel named in `channels` is open to a peer (again after either side reloads) |
-| `ended` | `{ call, reason }` | `declined`, `cancelled`, `missed` (also when a call stopped ringing as you answered), `hung_up`, `failed`, `dropped`, `busy` (the person you rang is on another call; `call` is null) |
+| `quality` | `{ peer, quality, rtt, loss, jitter, relayed }` | the connection to a peer changed its word: `good`, `fair` (from 300 ms round trip or 3% of packets lost) or `poor` (from 600 ms or 8%); `relayed` when a TURN server carries it |
+| `devices` | `{ selected }` | a microphone, camera or speaker was chosen, or one was plugged in or out (ask `devices()` again) |
+| `ended` | `{ call, reason }` | `declined`, `cancelled`, `missed` (also when a call stopped ringing as you answered), `hung_up`, `failed` (never connected), `dropped` (connected, then lost), `busy` (the person you rang is on another call; `call` is null) |
 | `error` | `{ error, media? }` | a request or media failure; `media: true` when the camera or microphone could not be opened |
 
-A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, seat, status, alive, connected, muted, cameraOff, sharing, stream }`: what the server says (`seat`, `status`, `alive`), what the peer told us (`muted`, `cameraOff`, `sharing`) and what the topology gives (`connected`, `stream`). `client.peer`, `peerMuted`, `peerCameraOff`, `peerSharing` and `remoteStream` are the first peer's, for a 1-on-1 UI.
+A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, seat, status, alive, connected, quality, muted, cameraOff, sharing, stream }`: what the server says (`seat`, `status`, `alive`), what the peer told us (`muted`, `cameraOff`, `sharing`) and what the topology gives (`connected`, `quality`, `stream`). `client.peer`, `peerMuted`, `peerCameraOff`, `peerSharing` and `remoteStream` are the first peer's, for a 1-on-1 UI.
 
 ### Options
 
@@ -127,6 +130,8 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `maxParticipants` | `4` | people on one call, me included: `callUser()` refuses a longer list and `canInvite()` says when the call is full (the server keeps the hard limit) |
 | `topology` | a `MeshTopology` per call | how media travels: a topology instance, a class, or `(call, client) => topology` to pick one per call from its `peers` |
 | `getUserMedia` | `navigator.mediaDevices.getUserMedia` | override for tests or custom constraints |
+| `devices` | `{}` | `{ microphone, camera, speaker }` device ids to start with (what the person chose last time); a device that is gone falls back to the system's own |
+| `statsInterval` | `3000` | milliseconds between looks at each connection's quality; `0` turns it off (`measure()` still works) |
 
 ### Methods and properties
 
@@ -140,6 +145,9 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `setMuted(bool)`, `setCameraOff(bool)` | tell everyone else as well (`peerstate`) |
 | `shareScreen()`, `stopSharing()` | the screen in place of the camera, and back |
 | `startMedia('audio' \| 'video')` | add media to a call that started with less, renegotiating every connection |
+| `devices()` | resolves to `{ microphones, cameras, speakers, selected }`, each device `{ id, label }`; labels are empty until the person allowed the camera or microphone, `speakers` is empty where the browser cannot pick one |
+| `setDevice('microphone' \| 'camera' \| 'speaker', id)` | choose a device (`null`: the system default); during a call the track is swapped in place for everyone, without renegotiating. A speaker is only remembered (`client.selected.speaker`): the page plays the sound, so it calls `element.setSinkId(id)`, as the widget does |
+| `measure()` | measure every connection now: `[{ peer, rtt, loss, jitter, relayed, quality }]` |
 | `channel(label, peerId?)` | the open data channel to a peer (the first peer by default), or null |
 | `resumeCall(callId?, { answer })` | pick up a call of mine on this page: the one named (answering it when `answer` is set), or whatever the server still has me in; for a pop-out window |
 | `handOff()` | this window steps back to `elsewhere` while another window (a pop-out) answers or continues the call |
@@ -147,7 +155,7 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `leave()` | the `leave` beacon, for `pagehide` |
 | `destroy()` | stop polling, let go of the call and close the connections and the camera, without events |
 
-Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `cameraStream` (the camera and microphone as asked for), `screenStream` (the shared screen, or null), `muted`, `cameraOff`, `sharing`, `tab` (this window's id), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
+Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `cameraStream` (the camera and microphone as asked for), `screenStream` (the shared screen, or null), `muted`, `cameraOff`, `sharing`, `tab` (this window's id), `selected` (the chosen devices), `quality` (the worst connection among the peers, or null), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
 
 Polls that fail (the server down, the network gone) are reported as `error` and the next one waits longer, doubling each time, up to 5 seconds during a call and a minute otherwise; the first poll that works brings the normal pace back. `HttpSignaling` rejects a page returned in place of JSON (a login form behind a redirect) with `reason: 'invalid_response'`.
 
@@ -224,7 +232,7 @@ A signal is `{ id, call, type, payload, from }`, `from` being the sender's user 
 
 ## The widget
 
-`CallWidget` is the UI over `CallClient`, plain DOM, no framework: the incoming-call toast, the call window (a tile per other participant with their video or avatar, your own picture, mute, camera, screen share, hang up), the chip shown while a pop-out window runs the call, and notices. A shared screen takes the stage with the cameras in a strip on top or on the right, wherever it gets more room.
+`CallWidget` is the UI over `CallClient`, plain DOM, no framework: the incoming-call toast, the call window (a tile per other participant with their video or avatar, your own picture, mute, camera, screen share, settings, hang up), the chip shown while a pop-out window runs the call, and notices. A shared screen takes the stage with the cameras in a strip on top or on the right, wherever it gets more room.
 
 ```js
 import { CallWidget } from '@packstub/holler/widget'
@@ -254,13 +262,20 @@ const widget = new CallWidget({
 | `callSelector` | `'[data-holler-call]'` | elements that ring someone on click (`null`: none) |
 | `labels`, `templates`, `icons` | the exported `labels`, `templates`, `icons` | override any of them |
 | `startPolling` | `true` | start at once; `false` to change things first and call `start()` yourself |
+| `devices` | `true` | the settings button in the call window: microphone, camera and, where the browser can, speaker |
+| `notifications` | `true` | a call that rings while the tab is in the background shows in the tab's title, and as a system notification once the person allowed it |
+| `storageKey` | `'holler:devices'` | the `localStorage` key the chosen devices are remembered under, per browser (`null`: not remembered) |
 
 Any element with `data-holler-call="<user id>"` rings that person (or adds them to the call you are on), and so does a `holler:call` event on `window` with `{ user }`; `widget.callUser(id)`, `accept()`, `decline()`, `hangUp()`, `add(id)`, `toggleMute()`, `toggleCamera()`, `toggleShare()` and `show(text)` do the same from a script (`announce(text)` only tells a screen reader). Every client event is dispatched again on the widget's element as `holler:<type>` (bubbling), plus `holler:sharing` `{ peer, sharing, spotlight }`. On the pop-out page itself, `inPopOut: true` makes the widget fill the window and do what the page that opened it asked: that page leaves a one-time token in `localStorage` and adds it to the URL (`&open=`), so a link alone never rings anyone or answers a call; it shows the call, with Accept. `destroy()` takes it all down: it stops polling, lets go of the call for the next page and closes the camera and the connections of the client it made. Signed out (401, 419) it stops polling quietly. `kind` (`call`) keeps other packages' calls away from the widget; `iceTransportPolicy` is passed on.
+
+**Settings.** The cog in the call window opens the microphone, camera and speaker menus; a choice applies at once, for everyone on the call, and is remembered in this browser for the next call. A tile shows "Weak connection" while the connection to that person is `poor`.
+
+**A call in the background.** While a call rings in a tab the person is not looking at, the tab's title alternates with "Ana is calling you". A system notification needs the person's permission, and browsers only ask after a click: the settings carry a link for it, and `widget.enableNotifications()` does the same from a button of your own (`widget.canNotify` says whether there is still something to ask). One notification per call, however many tabs are open; a click on it brings the tab back.
 
 Three ways to make it yours:
 
 - **CSS.** Every class is `holler-*`; the colours and sizes are custom properties on `.holler` (`--holler-bg`, `--holler-fg`, `--holler-dim`, `--holler-accent`, `--holler-danger`, `--holler-success`, `--holler-stage`, `--holler-radius`, `--holler-width`, `--holler-z`, `--holler-font`). Skip `widget.css` and write your own against the class names when that is not enough.
-- **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-holler-text="key"`, `data-holler-show="key"` (or `"!key"`), `data-holler-class="name:key …"`, `data-holler-attr="name:key …"`, `data-holler-src="key"`, `data-holler-video="key"` (a MediaStream) and `data-holler-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|focusWindow"`. The root of a template carries `data-holler-scope`; the window's needs `data-holler-ref="grid"` for the tiles and `data-holler-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `startPolling: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `role`).
+- **Templates.** `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions from a view model to an HTML string, rendered once each time the view appears and then kept current through hooks: `data-holler-text="key"`, `data-holler-show="key"` (or `"!key"`), `data-holler-class="name:key …"`, `data-holler-attr="name:key …"`, `data-holler-src="key"`, `data-holler-video="key"` (a MediaStream) and `data-holler-action="accept|decline|hangUp|toggleMute|toggleCamera|toggleShare|toggleSettings|enableNotifications|focusWindow"`; a `<select data-holler-device="microphone|camera|speaker">` is filled with the devices and switches on change. The root of a template carries `data-holler-scope`; the window's needs `data-holler-ref="grid"` for the tiles and `data-holler-ref="stage"` for the strip. Pass `templates`, `labels` and `icons` to the constructor, or set them on the widget before `start()` (with `startPolling: false`). The model is what `model()` returns (`names`, `status`, `peerName`, `peerAvatar`, `hasAvatar`, `initials`, `others`, `hasOthers`, `othersLabel`, `muted`, `cameraOff`, `sharing`, `canShare`, `localStream`, `count`, `spotlight`, `strip`, `notice`, the titles, `canSettings`, `settingsOpen`, `hasMicrophones`, `hasCameras`, `hasSpeakers`, `canNotify`, plus `labels` and `icons`) and, for a tile, `tileModel(peer)` (the peer's `id`, `name`, `avatar`, `status`, `connected`, `muted`, `cameraOff`, `sharing`, `stream`, `hasVideo`, plus `initials`, `hasAvatar`, `ringing`, `connecting`, `showVideo`, `showName`, `cameraOffBadge`, `poor`, `role`).
 - **Subclass.** `model()`, `tileModel()`, `render()`, `renderTiles()`, `placeStrip()` and the actions are methods on `CallWidget`.
 
 The module also exports `labels`, `templates` and `icons` (the defaults), `patch(root, model)` (applies the hooks to a piece of markup), `attachStream(video, stream)`, `fill(label, values)` (fills in `:name` and the like), `escape(text)` and `safeUrl(url)`, for templates and subclasses of your own.

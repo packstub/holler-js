@@ -499,7 +499,7 @@ describe('windows and reconnecting', () => {
         await settle()
 
         expect(ion.state).toBe('reconnecting')
-        expect(ion.call.peer_held).toBe(false)
+        expect(ion.call.peer_claimed).toBe(false)
 
         await settle(1100)
 
@@ -525,9 +525,9 @@ describe('windows and reconnecting', () => {
         expect(toAna.map((signal) => signal.type)).toEqual(['reset', 'offer'])
         expect(toAna[0].payload.session).toBe(reloaded.session)
         expect(server.participant(callId, 'ion').tab).toBe(reloaded.tab)
-        // The claim (a poll that holds) came before any signal from the new page.
+        // The claim (a poll that claims) came before any signal from the new page.
         const sinceLeave = server.log.slice(server.log.findIndex(([, action]) => action === 'leave') + 1).filter(([user]) => user === 'ion')
-        const firstClaim = sinceLeave.findIndex(([, action, , , hold]) => action === 'poll' && hold)
+        const firstClaim = sinceLeave.findIndex(([, action, , , claim]) => action === 'poll' && claim)
         const firstSend = sinceLeave.findIndex(([, action]) => action === 'send')
         expect(firstClaim).toBeGreaterThanOrEqual(0)
         expect(firstClaim).toBeLessThan(firstSend)
@@ -562,7 +562,7 @@ describe('windows and reconnecting', () => {
         expect(server.log.filter(([, action]) => action === 'leave')).toEqual([['ion', 'leave', 1, ion.tab]])
     })
 
-    it('shows a second window of the same person the call as held elsewhere', async () => {
+    it('shows a second window of the same person the call as claimed elsewhere', async () => {
         const { ana, callId } = await connect()
 
         const other = client('ana')
@@ -570,7 +570,7 @@ describe('windows and reconnecting', () => {
         await settle()
 
         expect(other.state).toBe('elsewhere')
-        expect(other.call).toMatchObject({ id: callId, held: true })
+        expect(other.call).toMatchObject({ id: callId, claimed_elsewhere: true })
         expect(other.pc).toBeNull()
         expect(ana.state).toBe('active')
     })
@@ -609,7 +609,7 @@ describe('windows and reconnecting', () => {
         expect(server.calls.get(1).status).toBe('active')
         expect(server.participant(1, 'ana').tab).toBe(popOut.tab)
         expect(popOut.pc.remoteDescription.type).toBe('offer')
-        expect(main.call.held).toBe(true)
+        expect(main.call.claimed_elsewhere).toBe(true)
     })
 
     it('ends the pop-out\'s call when the main tab hangs up from the chip', async () => {
@@ -644,7 +644,7 @@ describe('windows and reconnecting', () => {
         ion.leave()
         ion.stop()
         await settle()
-        expect(main.call.held).toBe(false)
+        expect(main.call.claimed_elsewhere).toBe(false)
         expect(main.state).toBe('elsewhere')
 
         await expect(main.takeOver()).resolves.toBe(true)
@@ -691,10 +691,10 @@ describe('windows and reconnecting', () => {
         await ion.callUser('ana')
         await settle()
 
-        // The pop-out opens; the main tab's last poll saw the call ringing and held by nobody.
+        // The pop-out opens; the main tab's last poll saw the call ringing and claimed by nobody.
         main.handOff()
         await settle()
-        expect(main.call).toMatchObject({ status: 'ringing', held: false })
+        expect(main.call).toMatchObject({ status: 'ringing', claimed_elsewhere: false })
         main.stop()
 
         const popOut = client('ana')
@@ -704,11 +704,11 @@ describe('windows and reconnecting', () => {
         expect(server.participant(1, 'ana').tab).toBe(popOut.tab)
         expect(main.call.status).toBe('ringing')
 
-        // The pop-out is alive: nothing happens, and the main tab now knows the call is active and held.
+        // The pop-out is alive: nothing happens, and the main tab now knows the call is active and claimed.
         main.start()
         await expect(main.takeOver()).resolves.toBe(false)
         expect(main.state).toBe('elsewhere')
-        expect(main.call).toMatchObject({ status: 'active', held: true })
+        expect(main.call).toMatchObject({ status: 'active', claimed_elsewhere: true })
 
         // The pop-out closes: the main tab resumes the running call instead of ringing it.
         popOut.leave()
@@ -738,7 +738,7 @@ describe('windows and reconnecting', () => {
         expect(results).toEqual([true, true])
         await expect(fromUpdate).resolves.toBe(true)
         expect(server.sent('ana').filter((signal) => signal.type === 'reset')).toHaveLength(1)
-        expect(server.log.filter(([user, action, call, tab, hold]) => user === 'ion' && action === 'poll' && hold && tab === main.tab && call === callId).length).toBeGreaterThan(0)
+        expect(server.log.filter(([user, action, call, tab, claim]) => user === 'ion' && action === 'poll' && claim && tab === main.tab && call === callId).length).toBeGreaterThan(0)
         // One new connection in the main tab, one on Ana's side for the reset.
         expect(FakeRTCPeerConnection.instances.length).toBe(connections + 2)
     })

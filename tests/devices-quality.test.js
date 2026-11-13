@@ -255,8 +255,48 @@ describe('a call that never connects', () => {
         // Whoever's timer ran out first hung up; the other side reads that as the same failure.
         expect(ion.events('ended').at(-1).reason).toBe('failed')
         expect(ana.events('ended').at(-1).reason).toBe('failed')
-        expect(warn).toHaveBeenCalledTimes(1)
-        expect(warn.mock.calls[0][0]).toContain('TURN')
+        // Once in each browser's console: the side that gave up, and the side told so by the server.
+        expect(warn).toHaveBeenCalledTimes(2)
+        expect(warn.mock.calls[0][0]).toContain('no TURN server is configured')
+    })
+
+    const turn = { iceServers: [{ urls: ['stun:s.example.com', 'turn:t.example.com:3478'], username: 'u', credential: 'c' }] }
+    const iceError = (client, detail) => client.pc.dispatchEvent(Object.assign(new Event('icecandidateerror'), detail))
+
+    it('says the TURN server refused the credentials when it did', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const { ion } = await connect({ network: false, ion: turn, ana: turn })
+        // A STUN server's error says nothing about the relay, and the first word per server is kept.
+        iceError(ion, { url: 'stun:s.example.com', errorCode: 701, errorText: 'STUN host lookup received error.' })
+        iceError(ion, { url: 'turn:t.example.com:3478', errorCode: 401, errorText: 'Unauthorized' })
+        iceError(ion, { url: 'turn:t.example.com:3478', errorCode: 701, errorText: 'TURN allocate request timed out.' })
+
+        await settle(1500)
+        expect(ion.events('ended').at(-1).reason).toBe('failed')
+        const lines = warn.mock.calls.map((call) => call[0])
+        expect(lines.filter((line) => line.includes('refused the credentials'))).toHaveLength(1)
+        expect(lines.find((line) => line.includes('refused'))).toContain('turn:t.example.com:3478 refused the credentials (401 Unauthorized)')
+    })
+
+    it('says the TURN server could not be reached when it never answered', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const { ion } = await connect({ network: false, ion: turn, ana: turn })
+        iceError(ion, { url: 'turn:t.example.com:3478', errorCode: 701, errorText: 'TURN allocate request timed out.' })
+
+        await settle(1500)
+        expect(warn.mock.calls.map((call) => call[0])).toContainEqual(expect.stringContaining('turn:t.example.com:3478 could not be reached (TURN allocate request timed out.)'))
+    })
+
+    it('forgets the errors of a call that connected anyway', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+        const { ion, ana } = await connect({ ion: turn, ana: turn })
+        iceError(ion, { url: 'turn:t.example.com:3478', errorCode: 401, errorText: 'Unauthorized' })
+        await ion.hangUp()
+        await settle()
+
+        expect(ion.iceErrors.size).toBe(0)
+        expect(ana.events('ended').at(-1).reason).toBe('hung_up')
+        expect(warn).not.toHaveBeenCalled()
     })
 
     it('says nothing about TURN when one is configured', async () => {

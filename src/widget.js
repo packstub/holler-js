@@ -3,11 +3,13 @@
  *
  * One object draws everything a call needs on top of a CallClient: the incoming-call
  * toast, the call window (a tile per other participant, your own picture, mute, camera,
- * screen share, settings for the microphone, camera and speaker, hang up), the chip shown
- * while a pop-out window runs the call, and short notices. A call that rings while the tab
+ * screen share, adding someone from a search box, putting the call on hold, settings for
+ * the microphone, camera and speaker, hang up), the chip shown while a pop-out window runs
+ * the call, the bar of a call on hold (resume, end), and short notices. A call that rings while the tab
  * is in the background shows in the tab's title and, once the person allowed it
- * (`enableNotifications()`, or the link in the settings), as a system notification. Any element with `data-holler-call="<user id>"` rings that person, or adds them
- * to the call you are on.
+ * (`enableNotifications()`, or the link in the settings), as a system notification. Any element with `data-holler-call="<user id>"` rings that person; pressed during a call,
+ * it asks whether to add them to the call, put the call on hold and ring them, or end the call
+ * and ring them (`duringCall: 'add'` adds them without asking).
  *
  *   import { CallWidget } from '@packstub/holler/widget'
  *   const widget = new CallWidget({ routes, csrf, iceServers, windowUrl })
@@ -16,7 +18,7 @@
  *   - CSS: every class is `holler-*`, the colours and sizes are custom properties on `.holler`
  *     (`--holler-bg`, `--holler-accent`…); keep `widget.css`, override a few variables, or
  *     write your own stylesheet against the class names.
- *   - Templates: `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions
+ *   - Templates: `templates.incoming`, `chip`, `window`, `tile`, `person`, `held`, `prompt` and `notice` are functions
  *     from a view model to an HTML string, rendered once each time the view appears and
  *     then kept up to date through a few `data-holler-*` hooks (see `patch()`): `text`,
  *     `show`, `class`, `attr`, `src`, `video`, `action`, `ref`. Hand in your own markup with
@@ -24,7 +26,7 @@
  *   - Subclass: `model()`, `tileModel()`, `render()` and the actions are methods.
  *
  * Events: every CallClient event is dispatched again on the widget's element as
- * `holler:<type>` (bubbling, so `document.addEventListener('holler:ended', …)` works),
+ * `holler:<type>` (bubbling, so `document.addEventListener('holler:ended', …)` works; `holler:held` when the call on hold changes),
  * plus `holler:sharing` { peer, sharing, spotlight } when someone's screen takes the stage.
  *
  * The chosen microphone, camera and speaker are remembered in this browser (localStorage,
@@ -33,7 +35,15 @@
 
 import { CallClient, HttpSignaling } from './index.js'
 
-const ACTIVE_STATES = ['calling', 'connecting', 'active', 'reconnecting']
+const ACTIVE_STATES = ['calling', 'connecting', 'active', 'reconnecting', 'waiting']
+
+// How long after the last key the people search asks the server.
+const SEARCH_DELAY = 200
+
+// My own picture's width as a share of the stage, as the person last resized it (shared with Filament Holler's widget).
+const SELF_SIZE_KEY = 'holler:self-size'
+const SELF_MIN = 0.12
+const SELF_MAX = 0.6
 
 // A pop-out that stopped holding the call for this long is gone, not reloading: the main page takes the call back.
 const TAKE_BACK_DELAY = 3000
@@ -61,7 +71,14 @@ export const icons = {
     speakerOff: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />'),
     settings: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />'),
     signal: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M9.348 14.652a3.75 3.75 0 0 1 0-5.304m5.304 0a3.75 3.75 0 0 1 0 5.304m-7.425 2.121a6.75 6.75 0 0 1 0-9.546m9.546 0a6.75 6.75 0 0 1 0 9.546M5.106 18.894c-3.808-3.807-3.808-9.98 0-13.788m13.788 0c3.808 3.807 3.808 9.98 0 13.788M12 12h.008v.008H12V12Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" />'),
+    userPlus: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M18 7.5v3m0 0v3m0-3h3m-3 0h-3m-2.25-4.125a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0ZM3 19.235v-.11a6.375 6.375 0 0 1 12.75 0v.109A12.318 12.318 0 0 1 9.374 21c-2.331 0-4.512-.645-6.374-1.766Z" />'),
+    pause: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />'),
+    play: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />'),
     window: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />'),
+    microphoneOff: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" /><path stroke-linecap="round" d="m3 3 18 18" />'),
+    users: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />'),
+    close: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />'),
+    resize: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />'),
 }
 
 /** The English texts; hand in your own for other languages (`:name` and `:count` are filled in). */
@@ -75,6 +92,7 @@ export const labels = {
     window_closed_continuing: 'The call window closed; the call continues here.',
     popup_blocked: 'Pop-ups are blocked here, so the call opens on this page.',
     peer_muted: 'Muted',
+    you_muted: 'Your mic is off',
     peer_camera_off: 'Camera off',
     peer_sharing: 'Sharing their screen',
     accept: 'Accept',
@@ -101,6 +119,7 @@ export const labels = {
     ended_failed: 'Could not connect',
     ended_dropped: 'Connection lost',
     ended_busy: 'Busy',
+    ended_signed_out: 'You were signed out. Sign in again to call.',
     no_media: 'Could not access your camera or microphone.',
     settings: 'Settings',
     microphone: 'Microphone',
@@ -110,6 +129,24 @@ export const labels = {
     device_failed: 'Could not switch to that device.',
     notify: 'Notify me about calls when this tab is in the background',
     quality_poor: 'Weak connection',
+    add_person: 'Add someone',
+    search_people: 'Search people…',
+    no_people: 'Nobody found',
+    already_on_call: 'Already on this call',
+    on_call_title: 'You are on a call',
+    add_to_call: 'Add to this call',
+    hold_and_call: 'Hold this call and start a new one',
+    end_and_call: 'End this call and start a new one',
+    cancel: 'Cancel',
+    hold: 'Put on hold',
+    on_hold: 'On hold',
+    resume: 'Resume',
+    peer_on_hold: ':name put the call on hold',
+    held_ended: 'The call on hold ended',
+    people: 'People',
+    in_call: 'In this call',
+    close: 'Close',
+    resize_self: 'Drag to resize your picture',
 }
 
 /** Text made safe to put into HTML: what a template of your own does with a name or anything else from the server. */
@@ -155,15 +192,38 @@ export const templates = {
                 <div class="holler-name" data-holler-text="names"></div>
                 <div class="holler-dim" data-holler-text="status"></div>
             </div>
+            <div class="holler-body">
             <div class="holler-stage" data-holler-ref="stage" data-holler-attr="data-spotlight:spotlight data-strip:strip">
                 <div class="holler-grid" data-holler-ref="grid" data-holler-attr="data-count:count"></div>
-                <video autoplay playsinline muted class="holler-local" aria-label="${escape(v.labels.you)}" data-holler-video="localStream" data-holler-class="holler-mirror:mirror holler-hidden:hideLocal"></video>
+                <div class="holler-ringing" data-holler-show="hasRinging" role="status"><span class="holler-ringing-dot"></span><span data-holler-text="ringingLabel"></span></div>
+                <div class="holler-self" data-holler-self data-holler-attr="style:selfStyle">
+                    <video autoplay playsinline muted class="holler-local" aria-label="${escape(v.labels.you)}" data-holler-video="localStream" data-holler-class="holler-mirror:mirror holler-hidden:hideLocal"></video>
+                    <span class="holler-badge holler-badge-round holler-self-muted" data-holler-show="muted" title="${escape(v.labels.you_muted)}">${v.icons.microphoneOff}<span class="holler-sr-only">${escape(v.labels.you_muted)}</span></span>
+                    <button type="button" class="holler-self-resize" data-holler-resize-self title="${escape(v.labels.resize_self)}" aria-label="${escape(v.labels.resize_self)}">${v.icons.resize}</button>
+                </div>
             </div>
-            <div class="holler-settings" data-holler-ref="settings" data-holler-show="settingsOpen">
-                <label class="holler-field" data-holler-show="hasMicrophones"><span>${escape(v.labels.microphone)}</span><select class="holler-select" data-holler-device="microphone"></select></label>
-                <label class="holler-field" data-holler-show="hasCameras"><span>${escape(v.labels.camera)}</span><select class="holler-select" data-holler-device="camera"></select></label>
-                <label class="holler-field" data-holler-show="hasSpeakers"><span>${escape(v.labels.speaker)}</span><select class="holler-select" data-holler-device="speaker"></select></label>
-                <button type="button" class="holler-link" data-holler-action="enableNotifications" data-holler-show="canNotify">${escape(v.labels.notify)}</button>
+            <aside class="holler-side" data-holler-show="sideOpen" data-holler-attr="aria-label:sideTitle">
+                <div class="holler-side-header">
+                    <div class="holler-name" data-holler-text="sideTitle"></div>
+                    <button type="button" class="holler-icon-btn" data-holler-action="closePanels" title="${escape(v.labels.close)}" aria-label="${escape(v.labels.close)}">${v.icons.close}</button>
+                </div>
+                <div class="holler-settings" data-holler-ref="settings" data-holler-show="settingsOpen">
+                    <label class="holler-field" data-holler-show="hasMicrophones"><span>${escape(v.labels.microphone)}</span><select class="holler-select" data-holler-device="microphone"></select></label>
+                    <label class="holler-field" data-holler-show="hasCameras"><span>${escape(v.labels.camera)}</span><select class="holler-select" data-holler-device="camera"></select></label>
+                    <label class="holler-field" data-holler-show="hasSpeakers"><span>${escape(v.labels.speaker)}</span><select class="holler-select" data-holler-device="speaker"></select></label>
+                    <button type="button" class="holler-link" data-holler-action="enableNotifications" data-holler-show="canNotify">${escape(v.labels.notify)}</button>
+                </div>
+                <div class="holler-people" data-holler-ref="people" data-holler-show="peopleOpen">
+                    <div class="holler-section-title">${escape(v.labels.in_call)}</div>
+                    <ul class="holler-members" data-holler-ref="members"></ul>
+                    <div class="holler-invite" data-holler-show="canAdd">
+                        <div class="holler-section-title">${escape(v.labels.add_person)}</div>
+                        <input type="search" class="holler-input" data-holler-people-search autocomplete="off" placeholder="${escape(v.labels.search_people)}" aria-label="${escape(v.labels.search_people)}">
+                        <div class="holler-people-list" data-holler-ref="peopleList"></div>
+                        <div class="holler-dim" data-holler-show="noPeople">${escape(v.labels.no_people)}</div>
+                    </div>
+                </div>
+            </aside>
             </div>
             <div class="holler-controls">
                 <button type="button" class="holler-btn" data-holler-action="toggleMute" data-holler-class="holler-btn-off:muted" data-holler-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
@@ -171,8 +231,10 @@ export const templates = {
                     <span data-holler-show="!cameraOff">${v.icons.camera}</span><span data-holler-show="cameraOff">${v.icons.cameraOff}</span>
                 </button>
                 <button type="button" class="holler-btn" data-holler-action="toggleShare" data-holler-show="canShare" data-holler-class="holler-btn-on:sharing" data-holler-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
+                <button type="button" class="holler-btn" data-holler-action="togglePeople" data-holler-class="holler-btn-on:peopleOpen" data-holler-attr="aria-expanded:peopleExpanded" title="${escape(v.labels.people)}" aria-label="${escape(v.labels.people)}">${v.icons.users}</button>
+                <button type="button" class="holler-btn" data-holler-action="hold" data-holler-show="canHold" title="${escape(v.labels.hold)}" aria-label="${escape(v.labels.hold)}">${v.icons.pause}</button>
                 <button type="button" class="holler-btn" data-holler-action="toggleSettings" data-holler-show="canSettings" data-holler-class="holler-btn-on:settingsOpen" data-holler-attr="aria-expanded:settingsExpanded" title="${escape(v.labels.settings)}" aria-label="${escape(v.labels.settings)}">${v.icons.settings}</button>
-                <button type="button" class="holler-btn holler-btn-danger" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+                <button type="button" class="holler-btn holler-btn-danger holler-btn-wide" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
             </div>
         </div>`,
 
@@ -187,13 +249,62 @@ export const templates = {
                 <span data-holler-text="name"></span>
                 <span class="holler-dim" data-holler-show="ringing">${escape(v.labels.calling)}</span>
                 <span class="holler-dim" data-holler-show="connecting">${escape(v.labels.connecting)}</span>
+                <span class="holler-dim" data-holler-show="onHold">${escape(v.labels.on_hold)}</span>
             </div>
             <div class="holler-badges">
-                <span class="holler-badge" data-holler-show="muted" data-peer="muted">${v.icons.speakerOff} ${escape(v.labels.peer_muted)}</span>
+                <span class="holler-badge holler-badge-round" data-holler-show="muted" data-peer="muted" title="${escape(v.labels.peer_muted)}">${v.icons.microphoneOff}<span class="holler-sr-only">${escape(v.labels.peer_muted)}</span></span>
                 <span class="holler-badge" data-holler-show="sharing" data-peer="sharing">${v.icons.screen} ${escape(v.labels.peer_sharing)}</span>
                 <span class="holler-badge" data-holler-show="cameraOffBadge" data-peer="camera-off">${v.icons.cameraOff} ${escape(v.labels.peer_camera_off)}</span>
                 <span class="holler-badge holler-badge-warn" data-holler-show="poor" data-peer="quality">${v.icons.signal} ${escape(v.labels.quality_poor)}</span>
             </div>
+        </div>`,
+
+    // One person the search found: a click adds them to the call (`data-holler-add`, set by the widget).
+    person: (v) => `
+        <button type="button" class="holler-person holler-person-option" data-holler-scope>
+            <img class="holler-avatar holler-avatar-sm" alt="" data-holler-src="avatar" data-holler-show="hasAvatar">
+            <span class="holler-avatar holler-avatar-sm holler-avatar-initials" data-holler-text="initials" data-holler-show="!hasAvatar"></span>
+            <span class="holler-name" data-holler-text="name"></span>
+            <span class="holler-person-call" aria-hidden="true">${v.icons.phone}</span>
+        </button>`,
+
+    // Someone on the call, in the People panel (me first, as "You").
+    member: (v) => `
+        <li class="holler-person holler-member" data-holler-scope>
+            <img class="holler-avatar holler-avatar-sm" alt="" data-holler-src="avatar" data-holler-show="hasAvatar">
+            <span class="holler-avatar holler-avatar-sm holler-avatar-initials" data-holler-text="initials" data-holler-show="!hasAvatar"></span>
+            <span class="holler-who">
+                <span class="holler-name" data-holler-text="name"></span>
+                <span class="holler-dim" data-holler-text="detail"></span>
+            </span>
+            <span class="holler-member-muted" data-holler-show="muted" title="${escape(v.labels.peer_muted)}">${v.icons.microphoneOff}</span>
+        </li>`,
+
+    // The call I put on hold, whatever else is on the screen.
+    held: (v) => `
+        <div class="holler-card holler-chip holler-held" data-holler-scope>
+            <span class="holler-person">
+                <span class="holler-avatar holler-avatar-initials">${v.icons.pause}</span>
+                <span class="holler-who">
+                    <span class="holler-name" data-holler-text="heldNames"></span>
+                    <span class="holler-dim">${escape(v.labels.on_hold)}</span>
+                </span>
+            </span>
+            <button type="button" class="holler-btn holler-btn-success" data-holler-action="resumeHeld" title="${escape(v.labels.resume)}" aria-label="${escape(v.labels.resume)}">${v.icons.play}</button>
+            <button type="button" class="holler-btn holler-btn-danger" data-holler-action="endHeld" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+        </div>`,
+
+    // Call pressed during a call: what to do with the call I am on.
+    prompt: (v) => `
+        <div class="holler-card holler-prompt" role="dialog" aria-label="${escape(v.labels.on_call_title)}" data-holler-scope>
+            <div class="holler-prompt-title">
+                <div class="holler-name">${escape(v.labels.on_call_title)}</div>
+                <div class="holler-dim" data-holler-text="promptName" data-holler-show="promptName"></div>
+            </div>
+            <button type="button" class="holler-option" data-holler-action="promptAdd" data-holler-show="promptCanAdd">${v.icons.userPlus}<span>${escape(v.labels.add_to_call)}</span></button>
+            <button type="button" class="holler-option" data-holler-action="promptHold" data-holler-show="promptCanHold">${v.icons.pause}<span>${escape(v.labels.hold_and_call)}</span></button>
+            <button type="button" class="holler-option" data-holler-action="promptEnd">${v.icons.phoneX}<span>${escape(v.labels.end_and_call)}</span></button>
+            <button type="button" class="holler-option holler-option-quiet" data-holler-action="promptCancel"><span>${escape(v.labels.cancel)}</span></button>
         </div>`,
 
     // Read out through the widget's live region, which is there before the text changes (a live region added with its text is often not read).
@@ -281,9 +392,9 @@ function play(video) {
     try { playing = video.play() } catch { return }
 
     playing?.catch?.((error) => {
-        if (error?.name !== 'NotAllowedError' || video.__callsWaiting) return
+        if (error?.name !== 'NotAllowedError' || video.__hollerWaiting) return
         const doc = video.ownerDocument
-        video.__callsWaiting = true
+        video.__hollerWaiting = true
         // Muted playback is always allowed: the picture at least.
         const unmute = ! video.muted
         if (unmute) {
@@ -294,7 +405,7 @@ function play(video) {
         const resume = () => {
             doc.removeEventListener('pointerdown', resume, true)
             doc.removeEventListener('keydown', resume, true)
-            video.__callsWaiting = false
+            video.__hollerWaiting = false
             if (! video.srcObject) return
             if (unmute) video.muted = false
             play(video)
@@ -396,9 +507,10 @@ export class CallWidget extends EventTarget {
      * @param {boolean} [options.inPopOut]  this page IS the pop-out: the widget fills it and does what the page that opened it asked (`?call=` / `?callee=` with a one-time `open` token; a link without one only shows the call)
      * @param {{ call?: string|number, callee?: string }} [options.openedFor]  what the pop-out does on load (read from the URL and checked against the token by default)
      * @param {string} [options.windowFeatures]  window.open features for the pop-out
-     * @param {string|null} [options.callSelector]  elements that ring someone on click; the user id is in `data-holler-call` (null: none)
+     * @param {string|null} [options.callSelector]  elements that ring someone on click; the user id is in `data-holler-call`, their name (for the question below) in `data-holler-name` (null: none)
+     * @param {'ask'|'add'} [options.duringCall]  what a call element does while I am on a call: ask (add, hold and call, end and call), or add the person at once (`ask`)
      * @param {object} [options.labels]  texts to override
-     * @param {object} [options.templates]  views to override: incoming, chip, window, tile, notice
+     * @param {object} [options.templates]  views to override: incoming, chip, window, tile, person, held, prompt, notice
      * @param {object} [options.icons]  SVG strings to override
      * @param {boolean} [options.startPolling]  start polling at once (true)
      * @param {string} [options.kind]  the kind of calls this widget draws (`call`); other packages' calls never reach it
@@ -413,8 +525,10 @@ export class CallWidget extends EventTarget {
             client = null, signaling = null, routes = null, csrf = null, iceServers = null, video = true, poll, reconnectTimeout, maxParticipants,
             root = document.body, windowUrl = null, inPopOut = false, popOut = windowUrl !== null, openedFor = null,
             windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-holler-call]', startPolling = true,
-            kind = 'call', iceTransportPolicy = 'all', devices = true, notifications = true, storageKey = DEVICES_KEY,
+            kind = 'call', iceTransportPolicy = 'all', devices = true, notifications = true, storageKey = DEVICES_KEY, duringCall = 'ask',
         } = options
+
+        this.duringCall = duringCall === 'add' ? 'add' : 'ask'
 
         this.devicesEnabled = Boolean(devices)
         this.notifications = Boolean(notifications)
@@ -451,13 +565,27 @@ export class CallWidget extends EventTarget {
         this.state = 'idle'
         this.call = null
         this.peers = []
+        this.stagePeers = []
+        this.ringingPeers = []
         this.muted = false
         this.cameraOff = false
         this.sharing = false
         this.strip = 'top'
         this.notice = null
         this.seconds = 0
-        this.views = { incoming: null, chip: null, window: null, notice: null }
+        this.views = { incoming: null, chip: null, window: null, held: null, prompt: null, notice: null }
+        // The call I put on hold, as the client last heard of it.
+        this.heldCall = null
+        // Call pressed during a call: who it was for, until the person chooses.
+        this.prompt = null
+        this.peopleOpen = false
+        this.selfSize = this.loadSelfSize()
+        this.people = []
+        this.peopleLoaded = false
+        this.peopleTimer = null
+        this.peopleSearch = 0
+        // Set while this widget resumes or ends the call on hold itself: no notice that it is gone.
+        this.quietHeld = false
         this.popupWindow = null
         this.clock = null
         this.takeBackTimer = null
@@ -486,7 +614,7 @@ export class CallWidget extends EventTarget {
         this.el = document.createElement('div')
         this.el.className = this.inPopOut ? 'holler holler-popup' : 'holler'
         this.slots = {}
-        for (const name of ['incoming', 'chip', 'window', 'notice']) {
+        for (const name of ['incoming', 'prompt', 'held', 'chip', 'window', 'notice']) {
             const slot = document.createElement('div')
             slot.className = `holler-slot holler-slot-${name}`
             slot.hidden = true
@@ -502,6 +630,34 @@ export class CallWidget extends EventTarget {
         this.el.addEventListener('click', (event) => {
             const button = event.target.closest('[data-holler-action]')
             if (button && this.el.contains(button)) this.act(button.getAttribute('data-holler-action'))
+
+            const person = event.target.closest('[data-holler-add]')
+            if (person && this.el.contains(person)) {
+                // The panel stays open: the person shows up under "In this call" as Calling…,
+                // and the search starts over for the next one.
+                const input = this.views.window?.querySelector('[data-holler-people-search]')
+                if (input) input.value = ''
+                this.add(person.getAttribute('data-holler-add'))
+            }
+        })
+        // The corner of my own picture: drag it to make the picture bigger or smaller, or use the arrow keys on it.
+        this.el.addEventListener('pointerdown', (event) => {
+            if (event.target.closest?.('[data-holler-resize-self]') && this.el.contains(event.target)) this.startSelfResize(event)
+        })
+        this.el.addEventListener('keydown', (event) => {
+            if (! event.target.closest?.('[data-holler-resize-self]')) return
+            const step = { ArrowUp: 0.04, ArrowLeft: 0.04, ArrowDown: -0.04, ArrowRight: -0.04 }[event.key]
+            if (! step) return
+            event.preventDefault()
+            this.resizeSelf(step)
+        })
+        this.el.addEventListener('input', (event) => {
+            if (event.target.hasAttribute?.('data-holler-people-search')) this.searchPeople(event.target.value)
+        })
+        this.el.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return
+            if (this.prompt) this.promptCancel()
+            else if (this.peopleOpen || this.settingsOpen) this.closePanels()
         })
         this.el.addEventListener('change', (event) => {
             const kind = event.target.getAttribute?.('data-holler-device')
@@ -537,6 +693,7 @@ export class CallWidget extends EventTarget {
         clearTimeout(this.takeBackTimer)
         clearTimeout(this.noticeTimer)
         clearTimeout(this.closeTimer)
+        clearTimeout(this.peopleTimer)
         this.clearAlert()
         this.ring.close()
         if (this.ownsClient) this.client.destroy()
@@ -557,15 +714,23 @@ export class CallWidget extends EventTarget {
             this.call = client.call
             this.sharing = client.sharing
 
+            // A call came back to this pop-out (a resume) before it closed over the one that ended.
+            if (ACTIVE_STATES.includes(state)) {
+                clearTimeout(this.closeTimer)
+                this.closeTimer = null
+            }
+
             this.syncUrl()
             this.ring.stop()
             if (state !== 'ringing') this.clearAlert()
-            if (! ACTIVE_STATES.includes(state)) this.settingsOpen = false
+            if (! ACTIVE_STATES.includes(state)) this.settingsOpen = this.peopleOpen = false
+            // The call the question was about is gone.
+            if (! ACTIVE_STATES.includes(state) && state !== 'elsewhere') this.prompt = null
             if (state === 'ringing') this.ring.play('ring')
             if (state === 'calling') this.ring.play('ringback')
 
             if (state === 'active' || (state === 'elsewhere' && client.call?.status === 'active')) this.startClock()
-            else if (! ['reconnecting', 'connecting'].includes(state)) this.stopClock()
+            else if (! ['reconnecting', 'connecting', 'waiting'].includes(state)) this.stopClock()
 
             this.render()
         })
@@ -596,7 +761,10 @@ export class CallWidget extends EventTarget {
             if (this.settingsOpen) this.refreshDevices()
             else this.render()
         })
-        this.on(client, 'peers', () => this.render())
+        this.on(client, 'peers', () => {
+            this.render()
+            this.refreshPeople()
+        })
         this.on(client, 'remotestream', () => this.render())
         this.on(client, 'peerstate', ({ detail: { peer, sharing } }) => {
             this.render()
@@ -609,6 +777,24 @@ export class CallWidget extends EventTarget {
             this.sharingPeers.delete(peer.id)
             const label = this.labels[`peer_${reason}`]
             if (label && client.peers.length > 0) this.show(fill(label, { name: peer.name }))
+        })
+        this.on(client, 'peerheld', ({ detail: { peer, onHold } }) => {
+            if (onHold) this.show(fill(this.labels.peer_on_hold, { name: peer.name }))
+            else this.render()
+        })
+        this.on(client, 'held', ({ detail: { call } }) => {
+            const before = this.heldCall
+            this.heldCall = call
+            // My side went down with the hold: whoever shared a screen starts over when I am back.
+            if (call) this.sharingPeers.clear()
+            // Gone, and not into a call again (resumed here or in another window of mine): the others ended it.
+            // Looked at once the poll that said so is applied, which also names a call resumed elsewhere.
+            if (before && ! call && ! this.quietHeld) {
+                queueMicrotask(() => {
+                    if (! this.heldCall && String(client.call?.id ?? '') !== String(before.id)) this.show(this.labels.held_ended)
+                })
+            }
+            this.render()
         })
         this.on(client, 'ended', ({ detail: { reason } }) => {
             this.sharing = false
@@ -625,14 +811,14 @@ export class CallWidget extends EventTarget {
                 client.stop()
                 return
             }
-            console.warn('[calls]', error)
+            console.warn('[holler]', error)
             if (media) this.show(this.labels.no_media)
             // The server's own words for a refusal it explains (not allowed, full); nothing raw from a crash.
             else if (error?.reason && error.status >= 400 && error.status < 500) this.show(error.message)
         })
 
         // Everything the client says, again on the page: `holler:statechange`, `holler:ended`…
-        for (const type of ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'peers', 'peerjoined', 'peerleft', 'peerstate', 'quality', 'devices', 'ended', 'error']) {
+        for (const type of ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'peers', 'peerjoined', 'peerleft', 'peerheld', 'peerstate', 'quality', 'devices', 'held', 'ended', 'error']) {
             this.on(client, type, ({ detail }) => this.emit(type, detail))
         }
 
@@ -640,10 +826,10 @@ export class CallWidget extends EventTarget {
         if (this.callSelector) {
             this.on(document, 'click', (event) => {
                 const button = event.target.closest?.(this.callSelector)
-                if (button) this.callUser(button.getAttribute('data-holler-call'))
+                if (button) this.callUser(button.getAttribute('data-holler-call'), { name: button.getAttribute('data-holler-name') })
             })
         }
-        this.on(window, 'holler:call', (event) => this.callUser(event.detail?.user))
+        this.on(window, 'holler:call', (event) => this.callUser(event.detail?.user, { name: event.detail?.name }))
         // A full page load: let go of the call so this or the next page can pick it up again.
         this.on(window, 'pagehide', () => client.leave())
         // Back on the tab: the title and the notification have done their job.
@@ -659,16 +845,37 @@ export class CallWidget extends EventTarget {
     // ---- actions -------------------------------------------------------------
 
     act(name) {
-        const actions = { accept: 'accept', decline: 'decline', hangUp: 'hangUp', toggleMute: 'toggleMute', toggleCamera: 'toggleCamera', toggleShare: 'toggleShare', focusWindow: 'focusWindow', toggleSettings: 'toggleSettings', enableNotifications: 'enableNotifications' }
+        const actions = {
+            accept: 'accept', decline: 'decline', hangUp: 'hangUp', toggleMute: 'toggleMute', toggleCamera: 'toggleCamera', toggleShare: 'toggleShare', focusWindow: 'focusWindow', toggleSettings: 'toggleSettings', enableNotifications: 'enableNotifications',
+            togglePeople: 'togglePeople', closePanels: 'closePanels', hold: 'hold', resumeHeld: 'resumeHeld', endHeld: 'endHeld', promptAdd: 'promptAdd', promptHold: 'promptHold', promptEnd: 'promptEnd', promptCancel: 'promptCancel',
+        }
         if (actions[name]) this[actions[name]]()
     }
 
-    /** Ring someone; on a call already (here, or in my pop-out) add them to it. */
-    callUser(user) {
+    /**
+     * Ring someone. On a call already (here, or in my pop-out), ask what to do with it: add
+     * them to it, put it on hold and ring them, or end it and ring them (`duringCall: 'add'`
+     * adds them without asking). `name` is shown with the question when given.
+     */
+    callUser(user, { name = null } = {}) {
         if (! user) return
 
         if (this.inCall || this.state === 'elsewhere') {
-            return this.add(user)
+            if (this.duringCall === 'add') return this.add(user)
+
+            if (this.client.peers.some((peer) => String(peer.id) === String(user))) {
+                this.show(this.labels.already_on_call)
+                return
+            }
+
+            this.prompt = { user: String(user), name: name ? String(name) : null }
+            this.settingsOpen = this.peopleOpen = false
+            this.render()
+            // A page that only watches the call (the pop-out runs it) polls slowly: ask now, so the
+            // question offers what the call allows at this moment (a hold needs it to be running).
+            this.client.schedule?.(0)
+            this.views.prompt?.querySelector('[data-holler-action]:not([hidden])')?.focus()
+            return
         }
 
         // The pop-out, or the page itself when the browser blocks the window.
@@ -706,6 +913,264 @@ export class CallWidget extends EventTarget {
         } catch (error) {
             this.show(error?.full ? this.labels.call_full : (error?.message || this.labels.call_full))
         }
+    }
+
+    // ---- Call pressed during a call ------------------------------------------------
+
+    /** Whoever the question was about, the question closed. */
+    takePrompt() {
+        const prompt = this.prompt
+        this.prompt = null
+        this.render()
+
+        return prompt
+    }
+
+    promptCancel() { this.takePrompt() }
+
+    promptAdd() {
+        const prompt = this.takePrompt()
+
+        return prompt ? this.add(prompt.user) : undefined
+    }
+
+    /** The call I am on waits (see `hold()`), and the person is rung. */
+    async promptHold() {
+        const prompt = this.takePrompt()
+        if (! prompt || ! await this.hold()) return
+
+        return this.callUser(prompt.user, prompt)
+    }
+
+    /** The call I am on ends, and the person is rung. */
+    async promptEnd() {
+        const prompt = this.takePrompt()
+        if (! prompt) return
+        await this.client.hangUp()
+
+        return this.callUser(prompt.user, prompt)
+    }
+
+    // ---- on hold --------------------------------------------------------------------
+
+    /** Put the call I am on on hold; resolves to whether it is. */
+    async hold() {
+        try {
+            await this.client.hold()
+
+            return true
+        } catch (error) {
+            // The server's own words (a call already on hold, the call ended meanwhile) came through `error`.
+            if (! error?.status) this.show(error?.message ?? '')
+
+            return false
+        }
+    }
+
+    /** Back into the call on hold: here, or in the pop-out when calls open in one. A call I am on goes on hold instead. */
+    async resumeHeld() {
+        const held = this.heldCall
+        if (! held || this.state === 'ringing') return
+
+        this.quietHeld = true
+        try {
+            await this.client.resumeHeld()
+        } catch (error) {
+            if (error?.status === 410) this.show(this.labels.held_ended)
+
+            return
+        } finally {
+            this.quietHeld = false
+        }
+
+        // A page that leaves calls to the pop-out: the window opens for the call (or the page takes it over when blocked).
+        if (this.popOut && ! this.openWindow({ call: held.id })) this.show(this.labels.popup_blocked)
+    }
+
+    /** Hang up the call on hold without coming back to it. */
+    async endHeld() {
+        this.quietHeld = true
+        try {
+            await this.client.endHeld()
+        } finally {
+            this.quietHeld = false
+        }
+    }
+
+    // ---- adding people ----------------------------------------------------------------
+
+    /** Open or close the search box of the call window. */
+    togglePeople() {
+        if (this.peopleOpen) return this.closePeople()
+
+        this.peopleOpen = true
+        this.settingsOpen = false
+        this.people = []
+        this.peopleLoaded = false
+        this.render()
+
+        if (! this.canAddNow()) return
+
+        const input = this.views.window?.querySelector('[data-holler-people-search]')
+        if (input) {
+            input.value = ''
+            input.focus()
+        }
+        this.loadPeople('')
+    }
+
+    /** Whether one more person can be rung into the call from here. */
+    canAddNow() {
+        return this.inCall && this.client.canInvite() && Boolean(this.client.signaling?.people)
+    }
+
+    /** Close the People or the Settings panel, whichever is open. */
+    closePanels() {
+        this.settingsOpen = false
+        this.closePeople()
+    }
+
+    // ---- my own picture ---------------------------------------------------------------
+
+    /** My picture's width as a share of the stage, as resized last time in this browser (null: the stylesheet's). */
+    loadSelfSize() {
+        try {
+            const size = Number(localStorage.getItem(SELF_SIZE_KEY))
+
+            return size >= SELF_MIN && size <= SELF_MAX ? size : null
+        } catch {
+            return null
+        }
+    }
+
+    setSelfSize(size, save = true) {
+        this.selfSize = Math.min(SELF_MAX, Math.max(SELF_MIN, size))
+        if (save) {
+            try { localStorage.setItem(SELF_SIZE_KEY, String(this.selfSize)) } catch {}
+        }
+        this.render()
+    }
+
+    /** Dragging the corner towards the middle of the stage makes the picture bigger. */
+    startSelfResize(event) {
+        const stage = this.views.window?.querySelector('[data-holler-ref="stage"]')
+        const self = stage?.querySelector('[data-holler-self]')
+        if (! stage || ! self || event.button > 0) return
+        event.preventDefault()
+
+        const rtl = getComputedStyle(stage).direction === 'rtl'
+        const startX = event.clientX
+        const startWidth = self.getBoundingClientRect().width
+        const stageWidth = stage.getBoundingClientRect().width || 1
+        const move = (e) => this.setSelfSize((startWidth + (rtl ? e.clientX - startX : startX - e.clientX)) / stageWidth, false)
+        const up = () => {
+            window.removeEventListener('pointermove', move)
+            window.removeEventListener('pointerup', up)
+            if (this.selfSize) this.setSelfSize(this.selfSize)
+        }
+        window.addEventListener('pointermove', move)
+        window.addEventListener('pointerup', up)
+    }
+
+    /** From the keyboard: a step bigger (positive) or smaller. */
+    resizeSelf(step) {
+        const stage = this.views.window?.querySelector('[data-holler-ref="stage"]')
+        const self = stage?.querySelector('[data-holler-self]')
+        const width = stage?.getBoundingClientRect().width
+        const current = this.selfSize ?? (self && width ? self.getBoundingClientRect().width / width : 0.28)
+        this.setSelfSize(current + step)
+    }
+
+    /** Who is on the call, me first, redrawn only when it changed. */
+    renderMembers() {
+        const list = this.views.window?.querySelector('[data-holler-ref="members"]')
+        if (! list) return
+
+        const me = { id: '', name: this.labels.you, avatar: null, detail: '', muted: this.muted }
+        const members = this.peopleOpen ? [me, ...this.peers.map((peer) => ({
+            id: peer.id,
+            name: peer.name,
+            avatar: peer.avatar,
+            muted: peer.muted,
+            detail: peer.status === 'ringing' ? this.labels.calling : peer.status === 'on_hold' ? this.labels.on_hold : peer.status === 'joined' && ! peer.connected ? this.labels.connecting : '',
+        }))] : []
+        const signature = members.map((member) => `${member.id}|${member.name}|${member.avatar ?? ''}|${member.detail}|${member.muted}`).join('\n')
+        if (list.__hollerMembers === signature) return
+        list.__hollerMembers = signature
+
+        list.replaceChildren(...members.map((member) => {
+            const model = { ...member, labels: this.labels, icons: this.icons, initials: this.initials(member.name), hasAvatar: Boolean(safeUrl(member.avatar, { svg: true })) }
+            const holder = document.createElement('ul')
+            holder.innerHTML = this.templates.member(model)
+            const item = holder.firstElementChild
+            patch(item, model)
+
+            return item
+        }))
+    }
+
+    closePeople() {
+        clearTimeout(this.peopleTimer)
+        this.peopleSearch++
+        this.peopleOpen = false
+        this.render()
+    }
+
+    /**
+     * Someone joined, declined, missed or left: who can be added changed, so the open search
+     * asks again for what is typed (someone who did not answer is back in the list).
+     */
+    refreshPeople() {
+        const roster = this.client.peers.map((peer) => `${peer.id}:${peer.status}`).join(',')
+        if (roster === this.peopleRoster) return
+        this.peopleRoster = roster
+        if (! this.peopleOpen || ! this.canAddNow()) return
+
+        const input = this.views.window?.querySelector('[data-holler-people-search]')
+        this.searchPeople(input?.value ?? '')
+    }
+
+    /** What was typed, once the person pauses. */
+    searchPeople(query) {
+        clearTimeout(this.peopleTimer)
+        this.peopleTimer = setTimeout(() => this.loadPeople(query), SEARCH_DELAY)
+    }
+
+    async loadPeople(query) {
+        const search = ++this.peopleSearch
+        let people = []
+        try {
+            people = await this.client.search(String(query ?? '').trim())
+        } catch {
+            // Nobody to show; the client said why through `error`.
+        }
+        // An answer to what was typed before the last key, or after the box closed.
+        if (search !== this.peopleSearch || ! this.peopleOpen) return
+
+        this.people = people
+        this.peopleLoaded = true
+        this.render()
+    }
+
+    /** The people found, redrawn only when they changed. */
+    renderPeople() {
+        const list = this.views.window?.querySelector('[data-holler-ref="peopleList"]')
+        if (! list) return
+
+        const signature = this.peopleOpen ? this.people.map((person) => `${person.id}|${person.name}|${person.avatar ?? ''}`).join('\n') : ''
+        if (list.__hollerPeople === signature) return
+        list.__hollerPeople = signature
+
+        list.replaceChildren(...(this.peopleOpen ? this.people : []).map((person) => {
+            const model = { ...person, labels: this.labels, icons: this.icons, initials: this.initials(person.name), hasAvatar: Boolean(safeUrl(person.avatar, { svg: true })) }
+            const holder = document.createElement('div')
+            holder.innerHTML = this.templates.person(model)
+            const option = holder.firstElementChild
+            option.setAttribute('data-holler-add', String(person.id))
+            patch(option, model)
+
+            return option
+        }))
     }
 
     toggleMute() {
@@ -756,6 +1221,7 @@ export class CallWidget extends EventTarget {
 
     toggleSettings() {
         this.settingsOpen = ! this.settingsOpen
+        if (this.settingsOpen) this.peopleOpen = false
         this.render()
         if (this.settingsOpen) this.refreshDevices()
     }
@@ -1007,7 +1473,7 @@ export class CallWidget extends EventTarget {
      * that moment; a closed one is taken back at once.
      */
     watchWindow() {
-        const orphaned = this.popOut && this.state === 'elsewhere' && this.call && ! this.call.held && this.call.status !== 'ended'
+        const orphaned = this.popOut && this.state === 'elsewhere' && this.call && ! this.call.claimed_elsewhere && this.call.status !== 'ended'
 
         if (! orphaned) {
             clearTimeout(this.takeBackTimer)
@@ -1047,14 +1513,21 @@ export class CallWidget extends EventTarget {
 
     /** Who is on the call with me, for the header and the chip. */
     get names() {
-        const names = this.peers.map((peer) => peer.name)
+        const names = this.stagePeers.map((peer) => peer.name)
 
         return names.length ? names.join(', ') : (this.call?.peer?.name ?? '')
     }
 
+    /** Who is on the call I put on hold. */
+    get heldNames() {
+        const peers = (this.heldCall?.peers ?? []).filter((peer) => ['ringing', 'joined', 'on_hold'].includes(peer.status ?? 'joined'))
+
+        return peers.length ? peers.map((peer) => peer.name).join(', ') : (this.heldCall?.peer?.name ?? '')
+    }
+
     /** The peer whose screen has the stage: the first one sharing with video coming in, or null. */
     get spotlight() {
-        return this.peers.find((peer) => peer.sharing && peer.hasVideo)?.id ?? null
+        return this.stagePeers.find((peer) => peer.sharing && peer.hasVideo)?.id ?? null
     }
 
     get elapsed() {
@@ -1069,9 +1542,11 @@ export class CallWidget extends EventTarget {
         if (this.state === 'calling') return labels.calling
         if (this.state === 'connecting') return labels.connecting
         if (this.state === 'reconnecting') return labels.reconnecting
+        // Everyone else stepped out; they are back when they resume.
+        if (this.state === 'waiting') return labels.on_hold
         if (this.state === 'active') return this.elapsed
         if (this.state === 'elsewhere') {
-            if (this.call?.held) return this.call?.status === 'active' ? this.elapsed : labels.calling
+            if (this.call?.claimed_elsewhere) return this.call?.status === 'active' ? this.elapsed : labels.calling
             return this.call?.status === 'ringing' ? labels.connecting : labels.window_closed
         }
 
@@ -1085,6 +1560,7 @@ export class CallWidget extends EventTarget {
     /** What the templates and hooks of the incoming toast, the chip and the call window read. */
     model() {
         const peer = this.call?.peer ?? null
+        const ringing = this.ringingPeers
         const others = Math.max(0, this.peers.length - 1)
         const spotlight = this.spotlight
 
@@ -1115,9 +1591,12 @@ export class CallWidget extends EventTarget {
             mirror: ! this.sharing,
             hideLocal: this.cameraOff && ! this.sharing,
             localStream: this.client.localStream,
-            count: this.peers.length,
+            count: this.stagePeers.length,
             spotlight,
-            strip: spotlight ? (this.peers.length > 1 ? this.strip : 'none') : null,
+            strip: spotlight ? (this.stagePeers.length > 1 ? this.strip : 'none') : null,
+            // Someone added to the call: rung, but not on the stage until they answer.
+            hasRinging: ringing.length > 0,
+            ringingLabel: fill(this.labels.inviting, { name: ringing.map((p) => p.name).join(', ') }),
             muteTitle: this.muted ? this.labels.unmute : this.labels.mute,
             cameraTitle: this.cameraOff ? this.labels.camera_on : this.labels.camera_off,
             shareTitle: this.sharing ? this.labels.stop_sharing : this.labels.share_screen,
@@ -1129,6 +1608,21 @@ export class CallWidget extends EventTarget {
             hasCameras: this.devicesEnabled && this.deviceList.cameras.length > 0,
             hasSpeakers: this.devicesEnabled && this.canPickSpeaker && this.deviceList.speakers.length > 0,
             canNotify: this.canNotify,
+            // Adding someone, and the call on hold
+            canAdd: this.canAddNow(),
+            peopleOpen: this.peopleOpen,
+            sideOpen: this.peopleOpen || this.settingsOpen,
+            sideTitle: this.peopleOpen ? this.labels.people : this.labels.settings,
+            selfStyle: this.selfSize ? `width: ${Math.round(this.selfSize * 1000) / 10}%` : null,
+            peopleExpanded: String(this.peopleOpen),
+            noPeople: this.peopleOpen && this.peopleLoaded && this.people.length === 0,
+            canHold: this.inCall && this.client.canHold(),
+            hasHeld: Boolean(this.heldCall),
+            heldNames: this.heldNames,
+            // Call pressed during a call
+            promptName: this.prompt?.name ?? '',
+            promptCanAdd: this.client.canInvite(),
+            promptCanHold: this.client.canHold(),
         }
     }
 
@@ -1144,8 +1638,9 @@ export class CallWidget extends EventTarget {
             hasAvatar: Boolean(safeUrl(peer.avatar, { svg: true })),
             ringing: peer.status === 'ringing',
             connecting: peer.status === 'joined' && ! peer.connected,
+            onHold: peer.status === 'on_hold',
             showVideo,
-            showName: this.peers.length > 1 || peer.status !== 'joined',
+            showName: this.stagePeers.length > 1 || peer.status !== 'joined',
             cameraOffBadge: peer.cameraOff && ! peer.sharing,
             poor: peer.connected && peer.quality === 'poor',
             role: spotlight ? (peer.id === spotlight ? 'spotlight' : 'strip') : null,
@@ -1157,17 +1652,26 @@ export class CallWidget extends EventTarget {
     /** Draw what the state calls for: one view per slot, created when it appears and patched after. */
     render() {
         this.peers = this.client.peers.map((peer) => ({ ...peer, hasVideo: (peer.stream?.getVideoTracks().length ?? 0) > 0 }))
+        // The stage shows who answered; someone rung into a running call waits off it ("Ringing Ana…").
+        // While nobody has answered yet (my own outgoing call) the people I am ringing are the stage.
+        const answered = this.peers.filter((peer) => peer.status !== 'ringing')
+        this.stagePeers = answered.length ? answered : this.peers
+        this.ringingPeers = answered.length ? this.peers.filter((peer) => peer.status === 'ringing') : []
         const model = this.model()
         // A keyboard user who answered or hung up from a view that goes away keeps their place.
         const focused = this.el.contains(document.activeElement) ? document.activeElement : null
 
         this.toggleView('incoming', this.state === 'ringing', model)
+        this.toggleView('prompt', Boolean(this.prompt), model)
+        this.toggleView('held', Boolean(this.heldCall), model)
         this.toggleView('chip', this.state === 'elsewhere', model)
         this.toggleView('window', this.inCall, model)
         this.toggleView('notice', Boolean(this.notice), model)
 
         if (this.views.window) {
             this.renderTiles(model.spotlight)
+            this.renderPeople()
+            this.renderMembers()
             this.renderDevices()
             this.applySpeaker()
         }
@@ -1208,7 +1712,7 @@ export class CallWidget extends EventTarget {
         const kept = new Set()
         let previous = null
 
-        for (const peer of this.peers) {
+        for (const peer of this.stagePeers) {
             let tile = [...grid.children].find((child) => child.getAttribute('data-holler-peer') === String(peer.id)) ?? null
             const model = this.tileModel(peer, spotlight)
 

@@ -28,14 +28,14 @@
  * `not_allowed`, `full`, `ended`, `too_large` from the Laravel backend).
  *
  * A `call` is { id, kind, status: ringing|active|ended, end_reason, role: caller|callee, seat, joined, on_hold,
- * peers: [{ id, name, avatar, seat, status: ringing|joined|on_hold|left|declined|missed|dropped, held, seen_ago }],
- * held, answered_at }, plus `peer`, `peer_held` and `peer_seen_ago` for the first peer.
+ * peers: [{ id, name, avatar, seat, status: ringing|joined|on_hold|left|declined|missed|dropped, claimed, seen_ago }],
+ * claimed_elsewhere, answered_at }, plus `peer`, `peer_claimed` and `peer_seen_ago` for the first peer.
  * Those three are all a 1-on-1 backend needs to send: without `peers`, `seat` and
  * `joined` the client derives them (the caller has seat 0, the callee seat 1).
  * `seat` is the order people were invited in; between two participants the lower
  * seat makes the offer. `joined` is whether I am in (false while the call rings me).
- * `held` means another window of mine holds my side of this call (a pop-out); a
- * peer's `held` that it has a live window on the call. `on_hold` is something else:
+ * `claimed_elsewhere` means another window of mine (a pop-out) has claimed my side
+ * of this call; a peer's `claimed` that it has a live window on the call. `on_hold`:
  * the person stepped out of the call (`hold()`) and is still on it, with no window
  * and no media until they resume. A call of mine that is on hold is no window's
  * call; every window of mine learns of it from the poll (`heldCall`).
@@ -53,7 +53,7 @@
  *   statechange { state }   idle | calling | ringing | connecting | active | reconnecting | waiting | elsewhere
  *                           (`waiting`: everyone else in the call put it on hold)
  *   incoming    { call }    someone is ringing you
- *   update      { call }    the call's server state changed (held, status, peers…)
+ *   update      { call }    the call's server state changed (claimed elsewhere, status, peers…)
  *   localstream { stream }  your camera/mic (or screen) stream, also after a share switch
  *   remotestream{ stream, peer }  a peer's media (fires again as tracks arrive)
  *   peers       { peers }   the roster changed: someone joined, left, connected, muted…
@@ -65,8 +65,9 @@
  *   quality     { peer, quality, rtt, loss, jitter, relayed }  how the connection to a peer is doing changed: good | fair | poor
  *   devices     { selected }  a microphone, camera or speaker was chosen, or one was plugged in or out (ask `devices()` again)
  *   datachannel { peer, channel, label }  a data channel to a peer is open (see the `channels` option)
- *   ended       { call, reason }  declined | cancelled | missed | hung_up | failed | dropped | busy
- *                           (`failed`: the browsers never found a path to each other; `dropped`: they had one and lost it)
+ *   ended       { call, reason }  declined | cancelled | missed | hung_up | failed | dropped | busy | signed_out
+ *                           (`failed`: the browsers never found a path to each other; `dropped`: they had one and lost it;
+ *                           `signed_out`: the server answered a poll with 401 or 419, the session is gone)
  *   error       { error }
  */
 
@@ -215,11 +216,11 @@ export class HttpSignaling {
         return this.request('POST', this.url('signal', callId), to === null || to === undefined ? { type, payload } : { type, payload, to })
     }
 
-    poll({ after = 0, call = null, tab = null, hold = false, kind = this.kind } = {}) {
+    poll({ after = 0, call = null, tab = null, claim = false, kind = this.kind } = {}) {
         const query = new URLSearchParams({ after: String(after) })
         if (call) query.set('call', String(call))
         if (tab) query.set('tab', tab)
-        if (hold) query.set('hold', '1')
+        if (claim) query.set('claim', '1')
         if (kind) query.set('kind', kind)
 
         return this.request('GET', `${this.routes.poll}?${query}`)
@@ -252,8 +253,10 @@ class Peer {
         this.avatar = null
         this.seat = null
         this.status = 'ringing'
-        this.held = null
+        this.claimed = null
         this.seenAgo = null
+        // Back from hold and not heard from yet (their camera prompt may still be open): no drop timer for them meanwhile.
+        this.returning = false
         this.muted = false
         this.cameraOff = false
         this.sharing = false
@@ -264,14 +267,14 @@ class Peer {
     }
 
     /** Take the server's view; true when something a UI shows changed. */
-    update({ name, avatar, seat, status, held, seen_ago }) {
+    update({ name, avatar, seat, status, claimed, seen_ago }) {
         const before = `${this.name}|${this.avatar}|${this.seat}|${this.status}|${this.alive}`
 
         if (name !== undefined) this.name = name ?? this.id
         if (avatar !== undefined) this.avatar = avatar ?? null
         if (seat !== undefined && seat !== null) this.seat = seat
         if (status !== undefined) this.status = status
-        if (held !== undefined) this.held = held
+        if (claimed !== undefined) this.claimed = claimed
         if (seen_ago !== undefined) this.seenAgo = seen_ago
 
         return before !== `${this.name}|${this.avatar}|${this.seat}|${this.status}|${this.alive}`
@@ -279,7 +282,7 @@ class Peer {
 
     /** Their window polls: a side that went quiet is reconnecting, not here. */
     get alive() {
-        return this.held !== false && (this.seenAgo ?? 0) < 6
+        return this.claimed !== false && (this.seenAgo ?? 0) < 6
     }
 
     snapshot() {
@@ -333,6 +336,11 @@ class Link {
 
         pc.addEventListener('icecandidate', ({ candidate }) => {
             if (candidate && ! this.closed) this.send('ice', candidate.toJSON())
+        })
+
+        // A STUN or TURN server that refused or never answered: kept to explain a call that fails.
+        pc.addEventListener('icecandidateerror', (event) => {
+            if (! this.closed) client.iceCandidateError(event)
         })
 
         pc.addEventListener('negotiationneeded', async () => {
@@ -697,6 +705,8 @@ export class CallClient extends EventTarget {
         this.everConnected = false
         // When the wait for a connection began (see `refreshState()`); null while connected.
         this.tryingSince = null
+        // What the TURN servers answered with when they refused, by URL (see `explainFailure()`).
+        this.iceErrors = new Map()
 
         this.tab = randomId()
         this.state = 'idle'
@@ -730,7 +740,7 @@ export class CallClient extends EventTarget {
         this.takingOver = null
         // Bumped whenever this window lets go of a call: a poll sent before is not applied after.
         this.epoch = 0
-        // Set while this window is about to run a call (answering, resuming): its polls hold the side.
+        // Set while this window is about to run a call (answering, resuming): its polls claim the side.
         this.joining = false
         this.placing = null
         this.answering = null
@@ -832,7 +842,7 @@ export class CallClient extends EventTarget {
 
     /** Milliseconds to the next poll: fast while a call needs this window, slow in a hidden idle tab. */
     interval() {
-        // A window about to run a call (answering, resuming) polls fast: those polls hold its side.
+        // A window about to run a call (answering, resuming) polls fast: those polls claim its side.
         const busy = this.isBusy()
         const hidden = ! busy && this.state === 'idle' && ! this.call && globalThis.document?.hidden === true
 
@@ -858,9 +868,9 @@ export class CallClient extends EventTarget {
         const call = this.call?.id ?? this.resumeId ?? null
         // Only a window that runs (or is about to run) the call takes the side;
         // a tab showing the chip for a pop-out just watches.
-        const hold = Boolean(this.joined || this.joining || this.resumeId)
+        const claim = Boolean(this.joined || this.joining || this.resumeId)
         const epoch = this.epoch
-        this.inFlight = this.signaling.poll({ after: this.cursor, call, tab: this.tab, hold })
+        this.inFlight = this.signaling.poll({ after: this.cursor, call, tab: this.tab, claim })
             // Sent before this window hung up or declined: what it says is about a call that is gone here.
             .then((data) => {
                 this.failures = 0
@@ -868,6 +878,8 @@ export class CallClient extends EventTarget {
             })
             .catch((error) => {
                 this.failures++
+                // The session is gone (signed out, expired): the call cannot go on from here.
+                if ((error?.status === 401 || error?.status === 419) && this.call && epoch === this.epoch) return this.finish('signed_out')
                 this.emit('error', { error })
             })
             .finally(() => { this.inFlight = null; this.schedule(this.failures ? this.backoff() : undefined) })
@@ -897,13 +909,15 @@ export class CallClient extends EventTarget {
             this.emit('update', { call: this.call })
 
             if (call.status === 'ended') {
-                this.finish(this.gaveUpConnecting(call.end_reason) ? 'failed' : (call.end_reason || 'hung_up'))
+                const failed = this.gaveUpConnecting(call.end_reason)
+                if (failed) this.explainFailure()
+                this.finish(failed ? 'failed' : (call.end_reason || 'hung_up'))
                 return
             }
 
             this.syncPeers(this.call)
 
-            if (! this.joined && call.held) {
+            if (! this.joined && call.claimed_elsewhere) {
                 // Another window of mine took it (the pop-out answered).
                 this.setState('elsewhere')
             } else if (this.joined) {
@@ -915,7 +929,7 @@ export class CallClient extends EventTarget {
             if (this.ringsMe(call)) {
                 // Named by this window (a pop-out opened to answer it): ring here.
                 await this.ring(call)
-            } else if (call.held || ! this.resumes) {
+            } else if (call.claimed_elsewhere || ! this.resumes) {
                 this.call = call
                 this.syncPeers(call)
                 this.setState('elsewhere')
@@ -1262,14 +1276,14 @@ export class CallClient extends EventTarget {
 
     async resumeCallOn(call, epoch) {
         // Take the side first: the answers to the offers sent below only reach the
-        // window that holds it, and a claim moves the cursor past the old signals.
+        // window that claimed it, and a claim moves the cursor past the old signals.
         try {
-            const claim = await this.signaling.poll({ after: this.cursor, call: call.id, tab: this.tab, hold: true })
+            const claim = await this.signaling.poll({ after: this.cursor, call: call.id, tab: this.tab, claim: true })
             if (epoch !== this.epoch) return
             if (typeof claim.cursor === 'number' && claim.cursor > this.cursor) this.cursor = claim.cursor
             if (! claim.call || claim.call.status === 'ended') return this.finish(claim.call?.end_reason || 'hung_up')
             call = { ...call, ...claim.call }
-            if (call.held) {
+            if (call.claimed_elsewhere) {
                 this.call = call
                 this.syncPeers(call)
                 this.setState('elsewhere')
@@ -1291,7 +1305,7 @@ export class CallClient extends EventTarget {
 
         await this.loadIceServers()
         // The call ended, or another window of mine took it, while the prompt was open.
-        if (epoch !== this.epoch || this.call?.id !== call.id || this.call?.held) {
+        if (epoch !== this.epoch || this.call?.id !== call.id || this.call?.claimed_elsewhere) {
             if (! this.joined) this.releaseMedia()
             return
         }
@@ -1359,7 +1373,7 @@ export class CallClient extends EventTarget {
         this.call = { ...this.call, ...fresh.call }
         this.emit('update', { call: this.call })
         this.syncPeers(this.call)
-        if (this.call.held) return false
+        if (this.call.claimed_elsewhere) return false
 
         const call = this.call
 
@@ -1389,7 +1403,7 @@ export class CallClient extends EventTarget {
             ...call.peer,
             seat: call.role === 'caller' ? 1 : 0,
             status: call.role === 'callee' || call.status === 'active' ? 'joined' : 'ringing',
-            held: call.peer_held,
+            claimed: call.peer_claimed,
             seen_ago: call.peer_seen_ago,
         }]
     }
@@ -1445,6 +1459,7 @@ export class CallClient extends EventTarget {
                 if (this.joined) this.refreshState()
             } else if (wasOnHold && peer.status === 'joined') {
                 // Back: their `reset` and a fresh offer follow, which build the new connection.
+                peer.returning = true
                 this.emit('peerheld', { peer: peer.snapshot(), onHold: false })
                 if (this.joined) this.refreshState()
             } else if (! wasJoined && peer.status === 'joined') {
@@ -1911,6 +1926,15 @@ export class CallClient extends EventTarget {
         } else if (this.state === 'active' || this.state === 'reconnecting' || this.state === 'connecting') {
             // Still the first attempt until the media has flowed once.
             this.setState(this.everConnected ? 'reconnecting' : 'connecting')
+            // Everyone missing is on their way back from hold, their window still polling: they may be
+            // answering a camera prompt, however long that takes. The clock starts with their `reset`.
+            const joined = peers.filter((peer) => peer.status === 'joined')
+            if (joined.length && joined.every((peer) => peer.returning && peer.alive)) {
+                clearTimeout(this.dropTimer)
+                this.dropTimer = null
+                this.tryingSince = null
+                return
+            }
             this.tryingSince ??= Date.now()
             this.dropTimer ??= setTimeout(() => {
                 if (this.state !== 'reconnecting' && this.state !== 'connecting') return
@@ -1930,19 +1954,41 @@ export class CallClient extends EventTarget {
             && this.tryingSince != null && Date.now() - this.tryingSince >= this.reconnectTimeout * 0.8
     }
 
+    /** The browser's `icecandidateerror`: a TURN server's refusal is kept for `explainFailure()`. */
+    iceCandidateError({ url, errorCode, errorText } = {}) {
+        if (! /^turns?:/i.test(String(url ?? ''))) return
+        // The first word per server is the telling one; later ones repeat it per network interface.
+        if (! this.iceErrors.has(url)) this.iceErrors.set(url, { url, code: Number(errorCode) || 0, text: errorText || '' })
+    }
+
     /**
-     * The browsers never found a path to each other. With no TURN server among the ICE
-     * servers that is the usual reason (a strict NAT, a VPN, a corporate firewall on one
-     * side), so the developer gets a word about it in the console.
+     * The browsers never found a path to each other: the developer gets one line in the
+     * console saying why, as far as the browser told. A TURN server that refused the
+     * credentials or could not be reached says so; with no TURN server at all, that is the
+     * usual reason (a strict NAT, a VPN, a corporate firewall on one side).
      */
     explainFailure() {
         // The other side simply went away (closed the tab mid-ring): nothing to do with the network.
         if (! [...this.roster.values()].some((peer) => peer.status === 'joined' && peer.alive)) return
 
+        const warn = (message) => globalThis.console?.warn?.(`[holler] The call could not connect: ${message}`)
+        const errors = [...this.iceErrors.values()]
+        const refused = errors.find((error) => error.code === 401 || error.code === 403 || error.code === 437 || error.code === 441)
+        if (refused) {
+            return warn(`the TURN server ${refused.url} refused the credentials (${refused.code}${refused.text ? ` ${refused.text}` : ''}). Check its shared secret, or the username and password, and that the clocks of the app server and the TURN server agree.`)
+        }
+        const unreachable = errors.find((error) => error.code === 701)
+        if (unreachable) {
+            return warn(`the TURN server ${unreachable.url} could not be reached${unreachable.text ? ` (${unreachable.text})` : ''}. Check its address and port, and that a firewall lets them through.`)
+        }
+        if (errors.length) {
+            return warn(`the TURN server ${errors[0].url} answered with an error (${errors[0].code}${errors[0].text ? ` ${errors[0].text}` : ''}).`)
+        }
+
         const urls = this.iceServers.flatMap((server) => [server?.urls ?? server?.url ?? []].flat())
         if (urls.some((url) => /^turns?:/i.test(String(url)))) return
 
-        globalThis.console?.warn?.('[holler] The call could not connect. No TURN server is configured, and some networks (strict NATs, VPNs, corporate firewalls) only connect through one: add a TURN server to the ICE servers.')
+        warn('no TURN server is configured, and some networks (strict NATs, VPNs, corporate firewalls) only connect through one. Add a TURN server to the ICE servers.')
     }
 
     async handleSignal({ type, payload, from }) {
@@ -1953,6 +1999,8 @@ export class CallClient extends EventTarget {
         // A 1-on-1 backend names no sender: the one peer it is.
         const senderId = from ?? this.call?.peer?.id ?? null
         const peer = senderId === null ? null : this.roster.get(String(senderId)) ?? null
+        // Back from hold with their media: from here on the usual patience applies.
+        if (peer && (type === 'reset' || type === 'offer')) peer.returning = false
 
         if (type === 'reset') {
             if (! peer) return
@@ -2003,6 +2051,7 @@ export class CallClient extends EventTarget {
         this.statsTimer = null
         this.everConnected = false
         this.tryingSince = null
+        this.iceErrors.clear()
         this.call = null
         this.roster.clear()
         this.buffered = []

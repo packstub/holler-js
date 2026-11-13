@@ -5,7 +5,7 @@ export type UserId = string | number
 
 export type CallState = 'idle' | 'calling' | 'ringing' | 'connecting' | 'active' | 'reconnecting' | 'waiting' | 'elsewhere'
 
-export type EndReason = 'declined' | 'cancelled' | 'missed' | 'hung_up' | 'failed' | 'dropped' | 'busy'
+export type EndReason = 'declined' | 'cancelled' | 'missed' | 'hung_up' | 'failed' | 'dropped' | 'busy' | 'signed_out'
 
 export type ParticipantStatus = 'ringing' | 'joined' | 'on_hold' | 'left' | 'declined' | 'missed' | 'dropped'
 
@@ -50,7 +50,7 @@ export interface CallPeer {
     avatar: string | null
     seat: number
     status: ParticipantStatus
-    held?: boolean
+    claimed?: boolean
     seen_ago?: number | null
 }
 
@@ -74,9 +74,10 @@ export interface Call {
     on_hold?: boolean
     peers?: CallPeer[]
     answered_at: string | null
-    held?: boolean
+    /** Another window of mine (a pop-out) has claimed my side of this call. */
+    claimed_elsewhere?: boolean
     peer?: CallPeer | null
-    peer_held?: boolean
+    peer_claimed?: boolean
     peer_seen_ago?: number | null
     [key: string]: unknown
 }
@@ -120,7 +121,7 @@ export interface Signaling {
     resume?(callId: Call['id'], tab?: string | null): Promise<Call>
     people?(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] } | Person[]>
     send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
-    poll(options: { after?: number, call?: Call['id'] | null, tab?: string | null, hold?: boolean, kind?: string | null }): Promise<PollResult>
+    poll(options: { after?: number, call?: Call['id'] | null, tab?: string | null, claim?: boolean, kind?: string | null }): Promise<PollResult>
     leave?(callId: Call['id'], tab: string): void
     configuration?(): Promise<RtcConfiguration>
 }
@@ -164,7 +165,7 @@ export class HttpSignaling implements Signaling {
     resume(callId: Call['id'], tab?: string | null): Promise<Call>
     people(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] }>
     send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
-    poll(options?: { after?: number, call?: Call['id'] | null, tab?: string | null, hold?: boolean, kind?: string | null }): Promise<PollResult>
+    poll(options?: { after?: number, call?: Call['id'] | null, tab?: string | null, claim?: boolean, kind?: string | null }): Promise<PollResult>
     leave(callId: Call['id'], tab: string): void
     configuration(): Promise<RtcConfiguration>
 }

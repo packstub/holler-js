@@ -374,7 +374,7 @@ describe('the widget', () => {
     })
 
     it('ships the default templates for anyone building on them', () => {
-        expect(Object.keys(templates)).toEqual(['incoming', 'chip', 'window', 'tile', 'person', 'held', 'prompt', 'notice'])
+        expect(Object.keys(templates)).toEqual(['incoming', 'chip', 'window', 'tile', 'person', 'member', 'held', 'prompt', 'notice'])
     })
 })
 
@@ -740,11 +740,41 @@ describe('adding someone, and a call on hold', () => {
         await settle()
 
         expect(server.log.find(([, type]) => type === 'invite')).toEqual(['ion', 'invite', 1, 'mihai'])
-        expect(ion.peopleOpen).toBe(false)
-        expect(tiles(ion).map((el) => el.dataset.peerId)).toEqual(['ana', 'mihai'])
+        // The panel stays open, the search starts over without the person rung.
+        expect(ion.peopleOpen).toBe(true)
+        expect(input.value).toBe('')
+        await settle(300)
+        expect(options().map((el) => el.getAttribute('data-holler-add'))).toEqual(['dana'])
+
+        // Rung, not on the stage until they answer: a "Ringing" line says who.
+        const ringing = ion.el.querySelector('.holler-ringing')
+        expect(tiles(ion).map((el) => el.dataset.peerId)).toEqual(['ana'])
+        expect(ringing.hidden).toBe(false)
+        expect(ringing.textContent).toContain('Mihai Rusu')
+
+        // Mihai says no: off the call, and back in the search.
+        await server.clientFor('mihai').decline(1)
+        await settle(500)
+        expect(ringing.hidden).toBe(true)
+        expect(options().map((el) => el.getAttribute('data-holler-add'))).toEqual(['dana', 'mihai'])
     })
 
-    it('has no add button without a backend that finds people, or once the call is full', async () => {
+    it('puts someone added on the stage once they answer', async () => {
+        const { ion, ana } = await connected()
+        const mihai = widget('mihai')
+        await ion.add('mihai')
+        await settle(300)
+        expect(tiles(ion).map((el) => el.dataset.peerId)).toEqual(['ana'])
+
+        mihai.el.querySelector('[data-holler-action="accept"]').click()
+        await settle()
+        connectAll(ion, ana, mihai)
+        await settle()
+        expect(tiles(ion).map((el) => el.dataset.peerId)).toEqual(['ana', 'mihai'])
+        expect(ion.el.querySelector('.holler-ringing').hidden).toBe(true)
+    })
+
+    it('lists who is on the call, and offers no search without a backend that finds people, or once the call is full', async () => {
         const signaling = server.clientFor('ion')
         delete signaling.people
         const ion = widget('ion', { signaling })
@@ -754,15 +784,21 @@ describe('adding someone, and a call on hold', () => {
         action(ana, 'accept').click()
         await settle()
 
-        expect(shown(ion, 'togglePeople')).toBe(false)
-        expect(shown(ana, 'togglePeople')).toBe(true)
+        const invite = (instance) => ! instance.views.window.querySelector('.holler-invite').hidden
+        // The People panel is there in every call: who is on it, me first.
+        expect(shown(ion, 'togglePeople')).toBe(true)
+        action(ion, 'togglePeople').click()
+        await settle()
+        expect([...ion.views.window.querySelectorAll('.holler-member .holler-name')].map((el) => el.textContent)).toEqual(['You', 'Ana Popescu'])
+        expect(invite(ion)).toBe(false)
+        expect(invite(ana)).toBe(true)
 
         const full = widget('mihai', { maxParticipants: 2, callSelector: null })
         await ana.hangUp()
         await settle()
         await full.callUser('ana')
         await settle()
-        expect(shown(full, 'togglePeople')).toBe(false)
+        expect(invite(full)).toBe(false)
     })
 
     it('asks what to do when Call is pressed during a call, and adds the person when told to', async () => {

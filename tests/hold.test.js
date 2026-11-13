@@ -109,6 +109,69 @@ describe('a call on hold', () => {
         expect(ion.events('ended')).toEqual([])
     })
 
+    it('gives someone coming back as long as their camera prompt takes', async () => {
+        const [ion, ana] = people('ion', 'ana')
+        await talking(ion, ana)
+        await ion.hold()
+        await settle()
+
+        // The browser asks again after a hold, and the person takes their time (the timeout is 1 s here).
+        const camera = ion.getUserMedia
+        let allow
+        ion.getUserMedia = (constraints) => new Promise((resolve) => { allow = () => resolve(camera(constraints)) })
+        const back = ion.resumeHeld()
+        await settle(5000)
+
+        expect(ana.peers[0]).toMatchObject({ id: 'ion', status: 'joined', alive: true })
+        expect(ana.events('ended')).toEqual([])
+        expect(ana.call).not.toBeNull()
+
+        allow()
+        await back
+        await settle()
+        connectAll(ion, ana)
+        await settle()
+
+        expect(ion.state).toBe('active')
+        expect(ana.state).toBe('active')
+        expect(ana.events('ended')).toEqual([])
+    })
+
+    it('still drops someone whose window went away during that prompt', async () => {
+        const [ion, ana] = people('ion', 'ana')
+        await talking(ion, ana)
+        await ion.hold()
+        await settle()
+
+        ion.getUserMedia = () => new Promise(() => {})
+        ion.resumeHeld()
+        await settle(500)
+        // The tab is closed with the prompt open: its polls stop.
+        ion.stop()
+        server.tick(10)
+        await settle(1500)
+
+        expect(ana.state).toBe('idle')
+        expect(ana.events('ended')).toHaveLength(1)
+    })
+
+    it('starts the clock once they are back with their media', async () => {
+        const [ion, ana] = people('ion', 'ana')
+        await talking(ion, ana)
+        await ion.hold()
+        await settle()
+
+        await ion.resumeHeld()
+        await settle()
+        // Their reset arrived, but no path between the browsers this time.
+        expect(ana.peers[0].connected).toBe(false)
+        await settle(1500)
+
+        // Whoever's timer runs out first hangs up: the call ends for both.
+        expect(ana.events('ended')).toHaveLength(1)
+        expect(ion.events('ended')).toHaveLength(1)
+    })
+
     it('rings someone else meanwhile, and swaps the two calls on resume', async () => {
         const [ion, ana, mihai] = people('ion', 'ana', 'mihai')
         await talking(ion, ana)

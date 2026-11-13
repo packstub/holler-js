@@ -11,6 +11,8 @@ export interface WidgetTemplates {
     window: Template
     tile: Template<TileModel>
     person: Template<Person & { initials: string, hasAvatar: boolean, labels: WidgetLabels, icons: WidgetIcons }>
+    /** Someone on the call in the People panel (me first, named "You"); `detail` is calling, connecting or on hold. */
+    member: Template<Person & { detail: string, muted: boolean, initials: string, hasAvatar: boolean, labels: WidgetLabels, icons: WidgetIcons }>
     held: Template
     prompt: Template
     notice: Template

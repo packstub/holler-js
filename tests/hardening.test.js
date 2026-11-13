@@ -125,7 +125,7 @@ describe('prompts', () => {
         // Every poll while the prompt is open holds the side, so the main tab never takes the call back.
         const polls = server.log.filter(([user, action]) => user === 'ana' && action === 'poll').slice(1)
         expect(polls.length).toBeGreaterThan(3)
-        expect(polls.every(([, , , , hold]) => hold === true)).toBe(true)
+        expect(polls.every(([, , , , claim]) => claim === true)).toBe(true)
 
         const { FakeMediaStream, FakeTrack } = await import('./fakes.js')
         allow(new FakeMediaStream([new FakeTrack('audio')]))
@@ -306,7 +306,7 @@ describe('review fixes', () => {
         expect(server.log.some(([user, action]) => user === 'ion' && action === 'start')).toBe(false)
     })
 
-    it('polls fast while resuming, even hidden: those polls hold the side', async () => {
+    it('polls fast while resuming, even hidden: those polls claim the side', async () => {
         const ion = client('ion')
         const ana = client('ana')
         ion.start()
@@ -325,7 +325,7 @@ describe('review fixes', () => {
         await settle(400)
 
         expect(again.joining).toBe(true)
-        expect(server.log.filter(([user, action, , , hold]) => user === 'ana' && action === 'poll' && hold).length).toBeGreaterThan(4)
+        expect(server.log.filter(([user, action, , , claim]) => user === 'ana' && action === 'poll' && claim).length).toBeGreaterThan(4)
     })
 
     it('puts the camera on the empty video sender a screen share left behind', async () => {
@@ -403,5 +403,46 @@ describe('failed polls', () => {
         expect(ion.backoff()).toBe(5000)
         ion.hangUp()
         expect(ion.backoff()).toBe(60000)
+    })
+
+    it('end the call as signed_out once the session is gone, and keep asking slowly while idle', async () => {
+        const ion = client('ion')
+        const ana = client('ana')
+        const signaling = server.clientFor('ion')
+        let signedOut = false
+        const poll = vi.fn((query) => signedOut ? Promise.reject(Object.assign(new Error('Unauthenticated.'), { status: 401 })) : signaling.poll(query))
+        ion.signaling = { ...signaling, poll }
+        ion.start()
+        ana.start()
+        await ion.callUser('ana')
+        await settle()
+        await ana.accept()
+        await settle()
+        const camera = ion.cameraStream.getTracks()
+
+        signedOut = true
+        await settle(100)
+
+        expect(ion.state).toBe('idle')
+        expect(ion.events('ended').at(-1).reason).toBe('signed_out')
+        expect(ion.events('error')).toEqual([])
+        expect(camera.every((track) => track.readyState === 'ended')).toBe(true)
+
+        // Idle, a 401 is an error like any other: polled with the usual back-off, picked up again after a new sign-in.
+        await settle(1000)
+        expect(ion.events('ended')).toHaveLength(1)
+        expect(ion.events('error').length).toBeGreaterThan(0)
+        expect(ion.polling).toBe(true)
+    })
+
+    it('read a CSRF failure (419) the same way during a call', async () => {
+        const ion = client('ion')
+        const signaling = server.clientFor('ion')
+        ion.signaling = { ...signaling, poll: () => Promise.reject(Object.assign(new Error('CSRF token mismatch.'), { status: 419 })) }
+        ion.start()
+        await ion.callUser('ana')
+        await settle(100)
+
+        expect(ion.events('ended').at(-1).reason).toBe('signed_out')
     })
 })

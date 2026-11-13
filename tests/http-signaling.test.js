@@ -49,12 +49,12 @@ describe('HttpSignaling', () => {
 
     it('polls with the cursor and only the query fields that are set', async () => {
         await signaling.poll()
-        await signaling.poll({ after: 12, call: 3, tab: 'win', hold: true })
+        await signaling.poll({ after: 12, call: 3, tab: 'win', claim: true })
 
         expect(fetchFn.mock.calls[0][0]).toBe('/calls/poll?after=0')
         expect(fetchFn.mock.calls[0][1].method).toBe('GET')
         expect(fetchFn.mock.calls[0][1].body).toBeUndefined()
-        expect(fetchFn.mock.calls[1][0]).toBe('/calls/poll?after=12&call=3&tab=win&hold=1')
+        expect(fetchFn.mock.calls[1][0]).toBe('/calls/poll?after=12&call=3&tab=win&claim=1')
     })
 
     it('throws the server message with the HTTP status on a failed request', async () => {

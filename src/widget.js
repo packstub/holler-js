@@ -40,6 +40,11 @@ const ACTIVE_STATES = ['calling', 'connecting', 'active', 'reconnecting', 'waiti
 // How long after the last key the people search asks the server.
 const SEARCH_DELAY = 200
 
+// My own picture's width as a share of the stage, as the person last resized it (shared with Filament Holler's widget).
+const SELF_SIZE_KEY = 'holler:self-size'
+const SELF_MIN = 0.12
+const SELF_MAX = 0.6
+
 // A pop-out that stopped holding the call for this long is gone, not reloading: the main page takes the call back.
 const TAKE_BACK_DELAY = 3000
 
@@ -70,6 +75,10 @@ export const icons = {
     pause: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" />'),
     play: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />'),
     window: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />'),
+    microphoneOff: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" /><path stroke-linecap="round" d="m3 3 18 18" />'),
+    users: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />'),
+    close: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />'),
+    resize: svg('<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />'),
 }
 
 /** The English texts; hand in your own for other languages (`:name` and `:count` are filled in). */
@@ -83,6 +92,7 @@ export const labels = {
     window_closed_continuing: 'The call window closed; the call continues here.',
     popup_blocked: 'Pop-ups are blocked here, so the call opens on this page.',
     peer_muted: 'Muted',
+    you_muted: 'Your mic is off',
     peer_camera_off: 'Camera off',
     peer_sharing: 'Sharing their screen',
     accept: 'Accept',
@@ -109,6 +119,7 @@ export const labels = {
     ended_failed: 'Could not connect',
     ended_dropped: 'Connection lost',
     ended_busy: 'Busy',
+    ended_signed_out: 'You were signed out. Sign in again to call.',
     no_media: 'Could not access your camera or microphone.',
     settings: 'Settings',
     microphone: 'Microphone',
@@ -132,6 +143,10 @@ export const labels = {
     resume: 'Resume',
     peer_on_hold: ':name put the call on hold',
     held_ended: 'The call on hold ended',
+    people: 'People',
+    in_call: 'In this call',
+    close: 'Close',
+    resize_self: 'Drag to resize your picture',
 }
 
 /** Text made safe to put into HTML: what a template of your own does with a name or anything else from the server. */
@@ -177,20 +192,38 @@ export const templates = {
                 <div class="holler-name" data-holler-text="names"></div>
                 <div class="holler-dim" data-holler-text="status"></div>
             </div>
+            <div class="holler-body">
             <div class="holler-stage" data-holler-ref="stage" data-holler-attr="data-spotlight:spotlight data-strip:strip">
                 <div class="holler-grid" data-holler-ref="grid" data-holler-attr="data-count:count"></div>
-                <video autoplay playsinline muted class="holler-local" aria-label="${escape(v.labels.you)}" data-holler-video="localStream" data-holler-class="holler-mirror:mirror holler-hidden:hideLocal"></video>
+                <div class="holler-ringing" data-holler-show="hasRinging" role="status"><span class="holler-ringing-dot"></span><span data-holler-text="ringingLabel"></span></div>
+                <div class="holler-self" data-holler-self data-holler-attr="style:selfStyle">
+                    <video autoplay playsinline muted class="holler-local" aria-label="${escape(v.labels.you)}" data-holler-video="localStream" data-holler-class="holler-mirror:mirror holler-hidden:hideLocal"></video>
+                    <span class="holler-badge holler-badge-round holler-self-muted" data-holler-show="muted" title="${escape(v.labels.you_muted)}">${v.icons.microphoneOff}<span class="holler-sr-only">${escape(v.labels.you_muted)}</span></span>
+                    <button type="button" class="holler-self-resize" data-holler-resize-self title="${escape(v.labels.resize_self)}" aria-label="${escape(v.labels.resize_self)}">${v.icons.resize}</button>
+                </div>
             </div>
-            <div class="holler-settings" data-holler-ref="settings" data-holler-show="settingsOpen">
-                <label class="holler-field" data-holler-show="hasMicrophones"><span>${escape(v.labels.microphone)}</span><select class="holler-select" data-holler-device="microphone"></select></label>
-                <label class="holler-field" data-holler-show="hasCameras"><span>${escape(v.labels.camera)}</span><select class="holler-select" data-holler-device="camera"></select></label>
-                <label class="holler-field" data-holler-show="hasSpeakers"><span>${escape(v.labels.speaker)}</span><select class="holler-select" data-holler-device="speaker"></select></label>
-                <button type="button" class="holler-link" data-holler-action="enableNotifications" data-holler-show="canNotify">${escape(v.labels.notify)}</button>
-            </div>
-            <div class="holler-people" data-holler-ref="people" data-holler-show="peopleOpen">
-                <input type="search" class="holler-input" data-holler-people-search autocomplete="off" placeholder="${escape(v.labels.search_people)}" aria-label="${escape(v.labels.search_people)}">
-                <div class="holler-people-list" data-holler-ref="peopleList"></div>
-                <div class="holler-dim" data-holler-show="noPeople">${escape(v.labels.no_people)}</div>
+            <aside class="holler-side" data-holler-show="sideOpen" data-holler-attr="aria-label:sideTitle">
+                <div class="holler-side-header">
+                    <div class="holler-name" data-holler-text="sideTitle"></div>
+                    <button type="button" class="holler-icon-btn" data-holler-action="closePanels" title="${escape(v.labels.close)}" aria-label="${escape(v.labels.close)}">${v.icons.close}</button>
+                </div>
+                <div class="holler-settings" data-holler-ref="settings" data-holler-show="settingsOpen">
+                    <label class="holler-field" data-holler-show="hasMicrophones"><span>${escape(v.labels.microphone)}</span><select class="holler-select" data-holler-device="microphone"></select></label>
+                    <label class="holler-field" data-holler-show="hasCameras"><span>${escape(v.labels.camera)}</span><select class="holler-select" data-holler-device="camera"></select></label>
+                    <label class="holler-field" data-holler-show="hasSpeakers"><span>${escape(v.labels.speaker)}</span><select class="holler-select" data-holler-device="speaker"></select></label>
+                    <button type="button" class="holler-link" data-holler-action="enableNotifications" data-holler-show="canNotify">${escape(v.labels.notify)}</button>
+                </div>
+                <div class="holler-people" data-holler-ref="people" data-holler-show="peopleOpen">
+                    <div class="holler-section-title">${escape(v.labels.in_call)}</div>
+                    <ul class="holler-members" data-holler-ref="members"></ul>
+                    <div class="holler-invite" data-holler-show="canAdd">
+                        <div class="holler-section-title">${escape(v.labels.add_person)}</div>
+                        <input type="search" class="holler-input" data-holler-people-search autocomplete="off" placeholder="${escape(v.labels.search_people)}" aria-label="${escape(v.labels.search_people)}">
+                        <div class="holler-people-list" data-holler-ref="peopleList"></div>
+                        <div class="holler-dim" data-holler-show="noPeople">${escape(v.labels.no_people)}</div>
+                    </div>
+                </div>
+            </aside>
             </div>
             <div class="holler-controls">
                 <button type="button" class="holler-btn" data-holler-action="toggleMute" data-holler-class="holler-btn-off:muted" data-holler-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
@@ -198,10 +231,10 @@ export const templates = {
                     <span data-holler-show="!cameraOff">${v.icons.camera}</span><span data-holler-show="cameraOff">${v.icons.cameraOff}</span>
                 </button>
                 <button type="button" class="holler-btn" data-holler-action="toggleShare" data-holler-show="canShare" data-holler-class="holler-btn-on:sharing" data-holler-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
-                <button type="button" class="holler-btn" data-holler-action="togglePeople" data-holler-show="canAdd" data-holler-class="holler-btn-on:peopleOpen" data-holler-attr="aria-expanded:peopleExpanded" title="${escape(v.labels.add_person)}" aria-label="${escape(v.labels.add_person)}">${v.icons.userPlus}</button>
+                <button type="button" class="holler-btn" data-holler-action="togglePeople" data-holler-class="holler-btn-on:peopleOpen" data-holler-attr="aria-expanded:peopleExpanded" title="${escape(v.labels.people)}" aria-label="${escape(v.labels.people)}">${v.icons.users}</button>
                 <button type="button" class="holler-btn" data-holler-action="hold" data-holler-show="canHold" title="${escape(v.labels.hold)}" aria-label="${escape(v.labels.hold)}">${v.icons.pause}</button>
                 <button type="button" class="holler-btn" data-holler-action="toggleSettings" data-holler-show="canSettings" data-holler-class="holler-btn-on:settingsOpen" data-holler-attr="aria-expanded:settingsExpanded" title="${escape(v.labels.settings)}" aria-label="${escape(v.labels.settings)}">${v.icons.settings}</button>
-                <button type="button" class="holler-btn holler-btn-danger" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+                <button type="button" class="holler-btn holler-btn-danger holler-btn-wide" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
             </div>
         </div>`,
 
@@ -219,7 +252,7 @@ export const templates = {
                 <span class="holler-dim" data-holler-show="onHold">${escape(v.labels.on_hold)}</span>
             </div>
             <div class="holler-badges">
-                <span class="holler-badge" data-holler-show="muted" data-peer="muted">${v.icons.speakerOff} ${escape(v.labels.peer_muted)}</span>
+                <span class="holler-badge holler-badge-round" data-holler-show="muted" data-peer="muted" title="${escape(v.labels.peer_muted)}">${v.icons.microphoneOff}<span class="holler-sr-only">${escape(v.labels.peer_muted)}</span></span>
                 <span class="holler-badge" data-holler-show="sharing" data-peer="sharing">${v.icons.screen} ${escape(v.labels.peer_sharing)}</span>
                 <span class="holler-badge" data-holler-show="cameraOffBadge" data-peer="camera-off">${v.icons.cameraOff} ${escape(v.labels.peer_camera_off)}</span>
                 <span class="holler-badge holler-badge-warn" data-holler-show="poor" data-peer="quality">${v.icons.signal} ${escape(v.labels.quality_poor)}</span>
@@ -227,12 +260,25 @@ export const templates = {
         </div>`,
 
     // One person the search found: a click adds them to the call (`data-holler-add`, set by the widget).
-    person: () => `
+    person: (v) => `
         <button type="button" class="holler-person holler-person-option" data-holler-scope>
             <img class="holler-avatar holler-avatar-sm" alt="" data-holler-src="avatar" data-holler-show="hasAvatar">
             <span class="holler-avatar holler-avatar-sm holler-avatar-initials" data-holler-text="initials" data-holler-show="!hasAvatar"></span>
             <span class="holler-name" data-holler-text="name"></span>
+            <span class="holler-person-call" aria-hidden="true">${v.icons.phone}</span>
         </button>`,
+
+    // Someone on the call, in the People panel (me first, as "You").
+    member: (v) => `
+        <li class="holler-person holler-member" data-holler-scope>
+            <img class="holler-avatar holler-avatar-sm" alt="" data-holler-src="avatar" data-holler-show="hasAvatar">
+            <span class="holler-avatar holler-avatar-sm holler-avatar-initials" data-holler-text="initials" data-holler-show="!hasAvatar"></span>
+            <span class="holler-who">
+                <span class="holler-name" data-holler-text="name"></span>
+                <span class="holler-dim" data-holler-text="detail"></span>
+            </span>
+            <span class="holler-member-muted" data-holler-show="muted" title="${escape(v.labels.peer_muted)}">${v.icons.microphoneOff}</span>
+        </li>`,
 
     // The call I put on hold, whatever else is on the screen.
     held: (v) => `
@@ -519,6 +565,8 @@ export class CallWidget extends EventTarget {
         this.state = 'idle'
         this.call = null
         this.peers = []
+        this.stagePeers = []
+        this.ringingPeers = []
         this.muted = false
         this.cameraOff = false
         this.sharing = false
@@ -531,6 +579,7 @@ export class CallWidget extends EventTarget {
         // Call pressed during a call: who it was for, until the person chooses.
         this.prompt = null
         this.peopleOpen = false
+        this.selfSize = this.loadSelfSize()
         this.people = []
         this.peopleLoaded = false
         this.peopleTimer = null
@@ -584,9 +633,23 @@ export class CallWidget extends EventTarget {
 
             const person = event.target.closest('[data-holler-add]')
             if (person && this.el.contains(person)) {
-                this.closePeople()
+                // The panel stays open: the person shows up under "In this call" as Calling…,
+                // and the search starts over for the next one.
+                const input = this.views.window?.querySelector('[data-holler-people-search]')
+                if (input) input.value = ''
                 this.add(person.getAttribute('data-holler-add'))
             }
+        })
+        // The corner of my own picture: drag it to make the picture bigger or smaller, or use the arrow keys on it.
+        this.el.addEventListener('pointerdown', (event) => {
+            if (event.target.closest?.('[data-holler-resize-self]') && this.el.contains(event.target)) this.startSelfResize(event)
+        })
+        this.el.addEventListener('keydown', (event) => {
+            if (! event.target.closest?.('[data-holler-resize-self]')) return
+            const step = { ArrowUp: 0.04, ArrowLeft: 0.04, ArrowDown: -0.04, ArrowRight: -0.04 }[event.key]
+            if (! step) return
+            event.preventDefault()
+            this.resizeSelf(step)
         })
         this.el.addEventListener('input', (event) => {
             if (event.target.hasAttribute?.('data-holler-people-search')) this.searchPeople(event.target.value)
@@ -594,7 +657,7 @@ export class CallWidget extends EventTarget {
         this.el.addEventListener('keydown', (event) => {
             if (event.key !== 'Escape') return
             if (this.prompt) this.promptCancel()
-            else if (this.peopleOpen) this.closePeople()
+            else if (this.peopleOpen || this.settingsOpen) this.closePanels()
         })
         this.el.addEventListener('change', (event) => {
             const kind = event.target.getAttribute?.('data-holler-device')
@@ -698,7 +761,10 @@ export class CallWidget extends EventTarget {
             if (this.settingsOpen) this.refreshDevices()
             else this.render()
         })
-        this.on(client, 'peers', () => this.render())
+        this.on(client, 'peers', () => {
+            this.render()
+            this.refreshPeople()
+        })
         this.on(client, 'remotestream', () => this.render())
         this.on(client, 'peerstate', ({ detail: { peer, sharing } }) => {
             this.render()
@@ -781,7 +847,7 @@ export class CallWidget extends EventTarget {
     act(name) {
         const actions = {
             accept: 'accept', decline: 'decline', hangUp: 'hangUp', toggleMute: 'toggleMute', toggleCamera: 'toggleCamera', toggleShare: 'toggleShare', focusWindow: 'focusWindow', toggleSettings: 'toggleSettings', enableNotifications: 'enableNotifications',
-            togglePeople: 'togglePeople', hold: 'hold', resumeHeld: 'resumeHeld', endHeld: 'endHeld', promptAdd: 'promptAdd', promptHold: 'promptHold', promptEnd: 'promptEnd', promptCancel: 'promptCancel',
+            togglePeople: 'togglePeople', closePanels: 'closePanels', hold: 'hold', resumeHeld: 'resumeHeld', endHeld: 'endHeld', promptAdd: 'promptAdd', promptHold: 'promptHold', promptEnd: 'promptEnd', promptCancel: 'promptCancel',
         }
         if (actions[name]) this[actions[name]]()
     }
@@ -943,6 +1009,8 @@ export class CallWidget extends EventTarget {
         this.peopleLoaded = false
         this.render()
 
+        if (! this.canAddNow()) return
+
         const input = this.views.window?.querySelector('[data-holler-people-search]')
         if (input) {
             input.value = ''
@@ -951,11 +1019,115 @@ export class CallWidget extends EventTarget {
         this.loadPeople('')
     }
 
+    /** Whether one more person can be rung into the call from here. */
+    canAddNow() {
+        return this.inCall && this.client.canInvite() && Boolean(this.client.signaling?.people)
+    }
+
+    /** Close the People or the Settings panel, whichever is open. */
+    closePanels() {
+        this.settingsOpen = false
+        this.closePeople()
+    }
+
+    // ---- my own picture ---------------------------------------------------------------
+
+    /** My picture's width as a share of the stage, as resized last time in this browser (null: the stylesheet's). */
+    loadSelfSize() {
+        try {
+            const size = Number(localStorage.getItem(SELF_SIZE_KEY))
+
+            return size >= SELF_MIN && size <= SELF_MAX ? size : null
+        } catch {
+            return null
+        }
+    }
+
+    setSelfSize(size, save = true) {
+        this.selfSize = Math.min(SELF_MAX, Math.max(SELF_MIN, size))
+        if (save) {
+            try { localStorage.setItem(SELF_SIZE_KEY, String(this.selfSize)) } catch {}
+        }
+        this.render()
+    }
+
+    /** Dragging the corner towards the middle of the stage makes the picture bigger. */
+    startSelfResize(event) {
+        const stage = this.views.window?.querySelector('[data-holler-ref="stage"]')
+        const self = stage?.querySelector('[data-holler-self]')
+        if (! stage || ! self || event.button > 0) return
+        event.preventDefault()
+
+        const rtl = getComputedStyle(stage).direction === 'rtl'
+        const startX = event.clientX
+        const startWidth = self.getBoundingClientRect().width
+        const stageWidth = stage.getBoundingClientRect().width || 1
+        const move = (e) => this.setSelfSize((startWidth + (rtl ? e.clientX - startX : startX - e.clientX)) / stageWidth, false)
+        const up = () => {
+            window.removeEventListener('pointermove', move)
+            window.removeEventListener('pointerup', up)
+            if (this.selfSize) this.setSelfSize(this.selfSize)
+        }
+        window.addEventListener('pointermove', move)
+        window.addEventListener('pointerup', up)
+    }
+
+    /** From the keyboard: a step bigger (positive) or smaller. */
+    resizeSelf(step) {
+        const stage = this.views.window?.querySelector('[data-holler-ref="stage"]')
+        const self = stage?.querySelector('[data-holler-self]')
+        const width = stage?.getBoundingClientRect().width
+        const current = this.selfSize ?? (self && width ? self.getBoundingClientRect().width / width : 0.28)
+        this.setSelfSize(current + step)
+    }
+
+    /** Who is on the call, me first, redrawn only when it changed. */
+    renderMembers() {
+        const list = this.views.window?.querySelector('[data-holler-ref="members"]')
+        if (! list) return
+
+        const me = { id: '', name: this.labels.you, avatar: null, detail: '', muted: this.muted }
+        const members = this.peopleOpen ? [me, ...this.peers.map((peer) => ({
+            id: peer.id,
+            name: peer.name,
+            avatar: peer.avatar,
+            muted: peer.muted,
+            detail: peer.status === 'ringing' ? this.labels.calling : peer.status === 'on_hold' ? this.labels.on_hold : peer.status === 'joined' && ! peer.connected ? this.labels.connecting : '',
+        }))] : []
+        const signature = members.map((member) => `${member.id}|${member.name}|${member.avatar ?? ''}|${member.detail}|${member.muted}`).join('\n')
+        if (list.__hollerMembers === signature) return
+        list.__hollerMembers = signature
+
+        list.replaceChildren(...members.map((member) => {
+            const model = { ...member, labels: this.labels, icons: this.icons, initials: this.initials(member.name), hasAvatar: Boolean(safeUrl(member.avatar, { svg: true })) }
+            const holder = document.createElement('ul')
+            holder.innerHTML = this.templates.member(model)
+            const item = holder.firstElementChild
+            patch(item, model)
+
+            return item
+        }))
+    }
+
     closePeople() {
         clearTimeout(this.peopleTimer)
         this.peopleSearch++
         this.peopleOpen = false
         this.render()
+    }
+
+    /**
+     * Someone joined, declined, missed or left: who can be added changed, so the open search
+     * asks again for what is typed (someone who did not answer is back in the list).
+     */
+    refreshPeople() {
+        const roster = this.client.peers.map((peer) => `${peer.id}:${peer.status}`).join(',')
+        if (roster === this.peopleRoster) return
+        this.peopleRoster = roster
+        if (! this.peopleOpen || ! this.canAddNow()) return
+
+        const input = this.views.window?.querySelector('[data-holler-people-search]')
+        this.searchPeople(input?.value ?? '')
     }
 
     /** What was typed, once the person pauses. */
@@ -1301,7 +1473,7 @@ export class CallWidget extends EventTarget {
      * that moment; a closed one is taken back at once.
      */
     watchWindow() {
-        const orphaned = this.popOut && this.state === 'elsewhere' && this.call && ! this.call.held && this.call.status !== 'ended'
+        const orphaned = this.popOut && this.state === 'elsewhere' && this.call && ! this.call.claimed_elsewhere && this.call.status !== 'ended'
 
         if (! orphaned) {
             clearTimeout(this.takeBackTimer)
@@ -1341,7 +1513,7 @@ export class CallWidget extends EventTarget {
 
     /** Who is on the call with me, for the header and the chip. */
     get names() {
-        const names = this.peers.map((peer) => peer.name)
+        const names = this.stagePeers.map((peer) => peer.name)
 
         return names.length ? names.join(', ') : (this.call?.peer?.name ?? '')
     }
@@ -1355,7 +1527,7 @@ export class CallWidget extends EventTarget {
 
     /** The peer whose screen has the stage: the first one sharing with video coming in, or null. */
     get spotlight() {
-        return this.peers.find((peer) => peer.sharing && peer.hasVideo)?.id ?? null
+        return this.stagePeers.find((peer) => peer.sharing && peer.hasVideo)?.id ?? null
     }
 
     get elapsed() {
@@ -1374,7 +1546,7 @@ export class CallWidget extends EventTarget {
         if (this.state === 'waiting') return labels.on_hold
         if (this.state === 'active') return this.elapsed
         if (this.state === 'elsewhere') {
-            if (this.call?.held) return this.call?.status === 'active' ? this.elapsed : labels.calling
+            if (this.call?.claimed_elsewhere) return this.call?.status === 'active' ? this.elapsed : labels.calling
             return this.call?.status === 'ringing' ? labels.connecting : labels.window_closed
         }
 
@@ -1388,6 +1560,7 @@ export class CallWidget extends EventTarget {
     /** What the templates and hooks of the incoming toast, the chip and the call window read. */
     model() {
         const peer = this.call?.peer ?? null
+        const ringing = this.ringingPeers
         const others = Math.max(0, this.peers.length - 1)
         const spotlight = this.spotlight
 
@@ -1418,9 +1591,12 @@ export class CallWidget extends EventTarget {
             mirror: ! this.sharing,
             hideLocal: this.cameraOff && ! this.sharing,
             localStream: this.client.localStream,
-            count: this.peers.length,
+            count: this.stagePeers.length,
             spotlight,
-            strip: spotlight ? (this.peers.length > 1 ? this.strip : 'none') : null,
+            strip: spotlight ? (this.stagePeers.length > 1 ? this.strip : 'none') : null,
+            // Someone added to the call: rung, but not on the stage until they answer.
+            hasRinging: ringing.length > 0,
+            ringingLabel: fill(this.labels.inviting, { name: ringing.map((p) => p.name).join(', ') }),
             muteTitle: this.muted ? this.labels.unmute : this.labels.mute,
             cameraTitle: this.cameraOff ? this.labels.camera_on : this.labels.camera_off,
             shareTitle: this.sharing ? this.labels.stop_sharing : this.labels.share_screen,
@@ -1433,8 +1609,11 @@ export class CallWidget extends EventTarget {
             hasSpeakers: this.devicesEnabled && this.canPickSpeaker && this.deviceList.speakers.length > 0,
             canNotify: this.canNotify,
             // Adding someone, and the call on hold
-            canAdd: this.inCall && this.client.canInvite() && Boolean(this.client.signaling?.people),
+            canAdd: this.canAddNow(),
             peopleOpen: this.peopleOpen,
+            sideOpen: this.peopleOpen || this.settingsOpen,
+            sideTitle: this.peopleOpen ? this.labels.people : this.labels.settings,
+            selfStyle: this.selfSize ? `width: ${Math.round(this.selfSize * 1000) / 10}%` : null,
             peopleExpanded: String(this.peopleOpen),
             noPeople: this.peopleOpen && this.peopleLoaded && this.people.length === 0,
             canHold: this.inCall && this.client.canHold(),
@@ -1461,7 +1640,7 @@ export class CallWidget extends EventTarget {
             connecting: peer.status === 'joined' && ! peer.connected,
             onHold: peer.status === 'on_hold',
             showVideo,
-            showName: this.peers.length > 1 || peer.status !== 'joined',
+            showName: this.stagePeers.length > 1 || peer.status !== 'joined',
             cameraOffBadge: peer.cameraOff && ! peer.sharing,
             poor: peer.connected && peer.quality === 'poor',
             role: spotlight ? (peer.id === spotlight ? 'spotlight' : 'strip') : null,
@@ -1473,6 +1652,11 @@ export class CallWidget extends EventTarget {
     /** Draw what the state calls for: one view per slot, created when it appears and patched after. */
     render() {
         this.peers = this.client.peers.map((peer) => ({ ...peer, hasVideo: (peer.stream?.getVideoTracks().length ?? 0) > 0 }))
+        // The stage shows who answered; someone rung into a running call waits off it ("Ringing Ana…").
+        // While nobody has answered yet (my own outgoing call) the people I am ringing are the stage.
+        const answered = this.peers.filter((peer) => peer.status !== 'ringing')
+        this.stagePeers = answered.length ? answered : this.peers
+        this.ringingPeers = answered.length ? this.peers.filter((peer) => peer.status === 'ringing') : []
         const model = this.model()
         // A keyboard user who answered or hung up from a view that goes away keeps their place.
         const focused = this.el.contains(document.activeElement) ? document.activeElement : null
@@ -1487,6 +1671,7 @@ export class CallWidget extends EventTarget {
         if (this.views.window) {
             this.renderTiles(model.spotlight)
             this.renderPeople()
+            this.renderMembers()
             this.renderDevices()
             this.applySpeaker()
         }
@@ -1527,7 +1712,7 @@ export class CallWidget extends EventTarget {
         const kept = new Set()
         let previous = null
 
-        for (const peer of this.peers) {
+        for (const peer of this.stagePeers) {
             let tile = [...grid.children].find((child) => child.getAttribute('data-holler-peer') === String(peer.id)) ?? null
             const model = this.tileModel(peer, spotlight)
 

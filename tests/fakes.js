@@ -250,8 +250,8 @@ const LIVE = ['ringing', 'joined', 'on_hold']
  * pushed around by a test (end a call, make a side go quiet).
  */
 export class FakeServer {
-    constructor({ holdSeconds = 5 } = {}) {
-        this.holdSeconds = holdSeconds
+    constructor({ claimSeconds = 5 } = {}) {
+        this.claimSeconds = claimSeconds
         this.calls = new Map()
         this.signals = []
         this.nextCallId = 1
@@ -428,8 +428,8 @@ export class FakeServer {
                 if (mine && mine.tab === tab) mine.tab = null
             },
 
-            async poll({ after = 0, call: currentId = null, tab = null, hold = false, kind = null } = {}) {
-                server.log.push([userId, 'poll', currentId, tab, hold])
+            async poll({ after = 0, call: currentId = null, tab = null, claim = false, kind = null } = {}) {
+                server.log.push([userId, 'poll', currentId, tab, claim])
                 const mine = liveCallsOf(userId).filter((c) => kind === null || c.kind === kind).sort((a, b) => b.id - a.id)
 
                 let current = currentId ? server.calls.get(Number(currentId)) ?? null : (mine.find((c) => me(c).status === 'joined') ?? null)
@@ -437,16 +437,16 @@ export class FakeServer {
                 // A call I put on hold is no window's call: it comes back as `on_hold`.
                 if (current && (! me(current) || (kind !== null && current.kind !== kind) || (current.status !== 'ended' && (! LIVE.includes(me(current).status) || me(current).status === 'on_hold')))) current = null
 
-                let held = false
-                if (current && currentId && tab && hold && current.status !== 'ended') {
+                let claimed = false
+                if (current && currentId && tab && claim && current.status !== 'ended') {
                     const side = me(current)
                     const previous = side.tab
-                    const stale = side.seen_at !== null && server.now - side.seen_at > server.holdSeconds
+                    const stale = side.seen_at !== null && server.now - side.seen_at > server.claimSeconds
                     if (previous === null || previous === tab || stale) {
                         const reclaimed = side.seen_at !== null && previous !== tab
                         side.tab = tab
                         side.seen_at = server.now
-                        held = true
+                        claimed = true
                         if (reclaimed) after = Math.max(after, server.signals.at(-1)?.id ?? 0)
                     }
                 }
@@ -455,7 +455,7 @@ export class FakeServer {
                 const onHold = mine.find((c) => me(c).status === 'on_hold') ?? null
                 // Asking is the heartbeat of someone away.
                 if (onHold) me(onHold).seen_at = server.now
-                const signals = held ? server.signals.filter((s) => s.to_user_id === userId && s.call === current.id && s.id > after) : []
+                const signals = claimed ? server.signals.filter((s) => s.to_user_id === userId && s.call === current.id && s.id > after) : []
 
                 return {
                     call: current ? server.present(current, userId, tab) : null,
@@ -496,13 +496,13 @@ export class FakeServer {
 
     present(found, me, tab = null) {
         const mine = found.participants.find((p) => p.user_id === me)
-        const isHeld = (p) => p.tab !== null && p.seen_at !== null && this.now - p.seen_at <= this.holdSeconds
+        const isClaimed = (p) => p.tab !== null && p.seen_at !== null && this.now - p.seen_at <= this.claimSeconds
         const peers = found.participants
             .filter((p) => p.user_id !== me)
             .sort((a, b) => a.seat - b.seat)
             .map((p) => ({
                 id: p.user_id, name: this.names[p.user_id] ?? p.user_id, avatar: null, seat: p.seat, status: p.status,
-                held: isHeld(p), seen_ago: p.seen_at === null ? null : this.now - p.seen_at,
+                claimed: isClaimed(p), seen_ago: p.seen_at === null ? null : this.now - p.seen_at,
             }))
         const first = peers.find((p) => LIVE.includes(p.status)) ?? peers[0] ?? null
 
@@ -516,10 +516,10 @@ export class FakeServer {
             joined: mine.status === 'joined',
             on_hold: mine.status === 'on_hold',
             answered_at: found.answered_at,
-            held: isHeld(mine) && mine.tab !== tab,
+            claimed_elsewhere: isClaimed(mine) && mine.tab !== tab,
             peers,
             peer: first ? { id: first.id, name: first.name, avatar: first.avatar } : null,
-            peer_held: first?.held ?? false,
+            peer_claimed: first?.claimed ?? false,
             peer_seen_ago: first?.seen_ago ?? null,
         }
     }

@@ -52,8 +52,11 @@
  *   peerjoined  { peer }    a peer is in the call
  *   peerleft    { peer, reason }  a peer is gone (left | declined | missed | dropped)
  *   peerstate   { peer, muted, cameraOff, sharing }  a peer muted, turned the camera off or shares the screen
+ *   quality     { peer, quality, rtt, loss, jitter, relayed }  how the connection to a peer is doing changed: good | fair | poor
+ *   devices     { selected }  a microphone, camera or speaker was chosen, or one was plugged in or out (ask `devices()` again)
  *   datachannel { peer, channel, label }  a data channel to a peer is open (see the `channels` option)
  *   ended       { call, reason }  declined | cancelled | missed | hung_up | failed | dropped | busy
+ *                           (`failed`: the browsers never found a path to each other; `dropped`: they had one and lost it)
  *   error       { error }
  */
 
@@ -82,6 +85,23 @@ export function drain(channel) {
         channel.addEventListener('bufferedamountlow', done)
         channel.addEventListener('close', done)
     })
+}
+
+// A device that is missing, busy or no longer matches: worth another try with less.
+const DEVICE_ERRORS = ['NotFoundError', 'NotReadableError', 'OverconstrainedError']
+
+/**
+ * A connection in a word, from the round trip in milliseconds and the share of packets
+ * lost since the last look: `poor` from 8% lost or 600 ms, `fair` from 3% or 300 ms.
+ *
+ * @param {{ rtt?: number|null, loss?: number|null }} stats
+ * @returns {'good'|'fair'|'poor'}
+ */
+export function rateConnection({ rtt = null, loss = null } = {}) {
+    if ((loss ?? 0) >= 0.08 || (rtt ?? 0) >= 600) return 'poor'
+    if ((loss ?? 0) >= 0.03 || (rtt ?? 0) >= 300) return 'fair'
+
+    return 'good'
 }
 
 const randomId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
@@ -217,6 +237,8 @@ class Peer {
         this.sharing = false
         this.stream = null
         this.connected = false
+        // good | fair | poor once the connection is measured; null before, and while it is down.
+        this.quality = null
     }
 
     /** Take the server's view; true when something a UI shows changed. */
@@ -239,9 +261,9 @@ class Peer {
     }
 
     snapshot() {
-        const { id, name, avatar, seat, status, alive, connected, muted, cameraOff, sharing, stream } = this
+        const { id, name, avatar, seat, status, alive, connected, quality, muted, cameraOff, sharing, stream } = this
 
-        return { id, name, avatar, seat, status, alive, connected, muted, cameraOff, sharing, stream }
+        return { id, name, avatar, seat, status, alive, connected, quality, muted, cameraOff, sharing, stream }
     }
 }
 
@@ -427,6 +449,47 @@ class Link {
         }
     }
 
+    /**
+     * How this connection is doing, from the browser's own statistics: the round trip in
+     * milliseconds, the share of packets lost since the last call, the jitter in seconds,
+     * whether the media goes through a TURN relay, and all of it in a word (`quality`).
+     * Null when the browser has nothing to say yet.
+     */
+    async stats() {
+        if (this.closed || typeof this.pc.getStats !== 'function') return null
+
+        const report = await this.pc.getStats()
+        const byId = new Map()
+        report.forEach((entry) => byId.set(entry.id, entry))
+
+        let pair = null
+        let lost = 0
+        let received = 0
+        let jitter = null
+
+        byId.forEach((entry) => {
+            if (entry.type === 'transport' && entry.selectedCandidatePairId) pair = byId.get(entry.selectedCandidatePairId) ?? pair
+            if (entry.type === 'inbound-rtp') {
+                lost += entry.packetsLost ?? 0
+                received += entry.packetsReceived ?? 0
+                if (entry.kind === 'audio' && typeof entry.jitter === 'number') jitter = entry.jitter
+            }
+        })
+        // Firefox reports no transport: the pair it marks as selected.
+        if (! pair) byId.forEach((entry) => { if (entry.type === 'candidate-pair' && (entry.selected || (entry.nominated && entry.state === 'succeeded'))) pair ??= entry })
+        if (! pair && received === 0) return null
+
+        const before = this.counted ?? { lost: 0, received: 0 }
+        this.counted = { lost, received }
+        const newlyLost = Math.max(0, lost - before.lost)
+        const newlyReceived = Math.max(0, received - before.received)
+        const loss = newlyLost + newlyReceived > 0 ? newlyLost / (newlyLost + newlyReceived) : 0
+        const rtt = typeof pair?.currentRoundTripTime === 'number' ? Math.round(pair.currentRoundTripTime * 1000) : null
+        const relayed = [pair?.localCandidateId, pair?.remoteCandidateId].some((id) => byId.get(id)?.candidateType === 'relay')
+
+        return { rtt, loss, jitter, relayed, quality: rateConnection({ rtt, loss }) }
+    }
+
     async replaceVideo(track) {
         const sender = this.pc.getSenders().find((s) => s.track?.kind === 'video' || (s.track === null && s.__video))
 
@@ -471,6 +534,7 @@ class Link {
  *   replaceVideo(track)                   the screen in place of the camera (null: nothing)
  *   addTracks(stream)                     media started mid-call (`startMedia()`): send these tracks too
  *   channel(peer, label)                  the open data channel with this label to a peer, or null
+ *   stats(peer)                           how the connection to a peer is doing: { rtt, loss, jitter, relayed, quality }, or null
  *   leave()                               hang up: close everything
  * The client offers: `iceServers`, `iceTransportPolicy`, `channelLabels`, `seat`, `localSource()`, `send(type, payload, to)`, `emit(type, detail)`,
  * `remoteStreamFrom(peer, stream)`, `connectionChanged(peer, connected)`, `negotiated(peer)`.
@@ -542,6 +606,11 @@ export class MeshTopology {
         return channel?.readyState === 'open' ? channel : null
     }
 
+    /** How the connection to a peer is doing (see `Link.stats()`), or null. */
+    stats(peer) {
+        return this.links.get(peer.id)?.stats() ?? null
+    }
+
     leave() {
         for (const link of this.links.values()) link.close()
         this.links.clear()
@@ -567,9 +636,12 @@ export class CallClient extends EventTarget {
      * @param {(constraints: MediaStreamConstraints) => Promise<MediaStream>} [options.getUserMedia]
      * @param {'all'|'relay'} [options.iceTransportPolicy]  `relay`: everything through TURN, nobody learns the other's addresses
      * @param {'video'|'audio'|'none'} [options.media]  what a call starts with (default: `video` per the `video` option); `none` connects without asking for the camera or the microphone, for a call that only needs data channels until `startMedia()`
+     * @param {{ microphone?: string|null, camera?: string|null, speaker?: string|null }} [options.devices]  the devices to start with, by id (what the person chose last time); see `devices()` and `setDevice()`
+     * @param {() => Promise<MediaDeviceInfo[]>} [options.enumerateDevices]
+     * @param {number} [options.statsInterval]  milliseconds between looks at each connection's quality (3000); 0 turns it off
      * @param {string[]} [options.channels]  data channels to open to every peer (ordered), surfaced by the `datachannel` event; channels pair by their place in this list, so every participant lists the same labels in the same order
      */
-    constructor({ signaling, iceServers = [], video = true, poll = {}, reconnectTimeout = 15000, resumes = true, maxParticipants = 4, topology = null, getUserMedia, iceTransportPolicy = 'all', media = null, channels = [] } = {}) {
+    constructor({ signaling, iceServers = [], video = true, poll = {}, reconnectTimeout = 15000, resumes = true, maxParticipants = 4, topology = null, getUserMedia, iceTransportPolicy = 'all', media = null, channels = [], devices = {}, enumerateDevices, statsInterval = 3000 } = {}) {
         super()
         this.signaling = signaling
         this.iceServersOption = iceServers
@@ -589,6 +661,15 @@ export class CallClient extends EventTarget {
         this.maxParticipants = maxParticipants
         this.topologyOption = topology ?? (() => new MeshTopology())
         this.getUserMedia = getUserMedia || ((constraints) => navigator.mediaDevices.getUserMedia(constraints))
+        this.enumerateDevices = enumerateDevices || (() => globalThis.navigator?.mediaDevices?.enumerateDevices?.() ?? Promise.resolve([]))
+        // The chosen devices by id; null is whatever the system has as its default.
+        this.selected = { microphone: devices.microphone || null, camera: devices.camera || null, speaker: devices.speaker || null }
+        this.statsInterval = statsInterval
+        this.statsTimer = null
+        // Whether the media of this call ever flowed: a call that ends without is `failed`, not `dropped`.
+        this.everConnected = false
+        // When the wait for a connection began (see `refreshState()`); null while connected.
+        this.tryingSince = null
 
         this.tab = randomId()
         this.state = 'idle'
@@ -626,6 +707,7 @@ export class CallClient extends EventTarget {
         this.answering = null
         this.mediaRequest = null
         this.onVisibility = () => { if (! globalThis.document?.hidden) this.schedule(0) }
+        this.onDeviceChange = () => this.emit('devices', { selected: { ...this.selected } })
     }
 
     // ---- 1-on-1 conveniences ---------------------------------------------------
@@ -670,6 +752,7 @@ export class CallClient extends EventTarget {
         if (this.polling) return
         this.polling = true
         globalThis.document?.addEventListener?.('visibilitychange', this.onVisibility)
+        globalThis.navigator?.mediaDevices?.addEventListener?.('devicechange', this.onDeviceChange)
         this.schedule(0)
     }
 
@@ -677,6 +760,7 @@ export class CallClient extends EventTarget {
         this.polling = false
         clearTimeout(this.timer)
         globalThis.document?.removeEventListener?.('visibilitychange', this.onVisibility)
+        globalThis.navigator?.mediaDevices?.removeEventListener?.('devicechange', this.onDeviceChange)
     }
 
     /**
@@ -693,6 +777,8 @@ export class CallClient extends EventTarget {
         this.releaseMedia()
         clearTimeout(this.dropTimer)
         this.dropTimer = null
+        clearTimeout(this.statsTimer)
+        this.statsTimer = null
         this.call = null
         this.roster.clear()
         this.state = 'idle'
@@ -772,7 +858,7 @@ export class CallClient extends EventTarget {
             this.emit('update', { call: this.call })
 
             if (call.status === 'ended') {
-                this.finish(call.end_reason || 'hung_up')
+                this.finish(this.gaveUpConnecting(call.end_reason) ? 'failed' : (call.end_reason || 'hung_up'))
                 return
             }
 
@@ -1221,6 +1307,8 @@ export class CallClient extends EventTarget {
         for (const peer of this.roster.values()) {
             this.topology.connect(peer, fresh ? { polite: false, reset: true } : { polite: peer.seat < this.seat })
         }
+
+        this.watchQuality()
     }
 
     topologyFor(call) {
@@ -1348,6 +1436,158 @@ export class CallClient extends EventTarget {
         return peer ? this.topology?.channel?.(peer, label) ?? null : null
     }
 
+    // ---- devices --------------------------------------------------------------
+
+    /**
+     * The microphones, cameras and speakers to choose from, and what is chosen. Browsers
+     * name the devices only once the person allowed the camera or the microphone, so
+     * before a first call the labels are empty; `speakers` is empty where the browser
+     * cannot pick one (Safari, Firefox on some systems).
+     *
+     * @returns {Promise<{ microphones: {id: string, label: string}[], cameras: {id: string, label: string}[], speakers: {id: string, label: string}[], selected: { microphone: string|null, camera: string|null, speaker: string|null } }>}
+     */
+    async devices() {
+        let list = []
+        try {
+            list = (await this.enumerateDevices()) ?? []
+        } catch {
+            // No permission to list them, or no devices API: nothing to choose from.
+        }
+        // Chrome also lists the system's choice as devices of its own (`default`, `communications`): null stands for that here.
+        const of = (kind) => list
+            .filter((device) => device.kind === kind && device.deviceId && ! ['default', 'communications'].includes(device.deviceId))
+            .map((device) => ({ id: device.deviceId, label: device.label || '' }))
+
+        return { microphones: of('audioinput'), cameras: of('videoinput'), speakers: of('audiooutput'), selected: { ...this.selected } }
+    }
+
+    /**
+     * Choose a microphone, a camera or a speaker by its id (null: the system default). During
+     * a call the microphone or the camera changes at once, for everyone, without renegotiating;
+     * otherwise the next call starts with it. A speaker is only remembered here: the page plays
+     * the sound, so it applies it (`element.setSinkId(id)`), as the widget does.
+     *
+     * @param {'microphone'|'camera'|'speaker'} kind
+     * @param {string|null} id
+     */
+    async setDevice(kind, id) {
+        if (! (kind in this.selected)) throw new Error(`Unknown device kind: ${kind}`)
+        id = id || null
+        if (this.selected[kind] === id) return
+
+        const previous = this.selected[kind]
+        this.selected[kind] = id
+
+        try {
+            if (kind !== 'speaker') await this.switchInput(kind, previous)
+        } catch (error) {
+            this.selected[kind] = previous
+            this.emit('error', { error, media: true })
+            throw error
+        }
+
+        this.emit('devices', { selected: { ...this.selected } })
+    }
+
+    /** What `getUserMedia` takes for a device: that one exactly, or any. */
+    deviceConstraint(id) {
+        return id ? { deviceId: { exact: id } } : true
+    }
+
+    /** Swap the running microphone or camera track for one from the chosen device. */
+    async switchInput(kind, previous) {
+        const audio = kind === 'microphone'
+        const stream = this.cameraStream
+        const old = stream?.getTracks().find((track) => track.kind === (audio ? 'audio' : 'video'))
+        // Nothing of this kind is running (no call, or a voice call): the next call uses the choice.
+        if (! stream || ! old) return
+
+        const request = (id) => this.getUserMedia(audio ? { audio: this.deviceConstraint(id), video: false } : { audio: false, video: this.deviceConstraint(id) })
+        const epoch = this.epoch
+        // Released first: some browsers and most phones open one microphone or camera at a time.
+        old.stop()
+
+        let fresh
+        let failure = null
+        try {
+            fresh = await request(this.selected[kind])
+        } catch (error) {
+            // Back to the device that worked, so the call is not left without a microphone.
+            failure = error
+            fresh = await request(previous).catch(() => null)
+        }
+
+        const track = fresh?.getTracks()[0] ?? null
+        if (epoch !== this.epoch || this.cameraStream !== stream) {
+            // The call ended while the browser was asking.
+            track?.stop()
+            return
+        }
+
+        if (track) {
+            stream.removeTrack(old)
+            stream.addTrack(track)
+            track.enabled = audio ? ! this.muted : ! this.cameraOff
+            this.publishLocal()
+            // The sender of the stopped track takes the new one in place.
+            if (audio) this.topology?.addTracks?.(this.localSource())
+            else if (! this.screenStream) await this.topology?.replaceVideo?.(track)
+        }
+
+        if (failure) throw failure
+    }
+
+    // ---- connection quality ----------------------------------------------------
+
+    /** The worst connection among the peers: good | fair | poor, or null before anything is measured. */
+    get quality() {
+        const order = ['good', 'fair', 'poor']
+        const measured = [...this.roster.values()].map((peer) => peer.quality).filter(Boolean)
+
+        return measured.length ? order[Math.max(...measured.map((quality) => order.indexOf(quality)))] : null
+    }
+
+    /** Look at every connection every `statsInterval` milliseconds while this window runs the call. */
+    watchQuality() {
+        clearTimeout(this.statsTimer)
+        this.statsTimer = null
+        if (! this.statsInterval || ! this.topology?.stats) return
+
+        this.statsTimer = setTimeout(async () => {
+            await this.measure().catch(() => {})
+            if (this.joined) this.watchQuality()
+        }, this.statsInterval)
+    }
+
+    /**
+     * Measure the connection to every connected peer now: resolves to `[{ peer, rtt, loss,
+     * jitter, relayed, quality }]`, and says `quality` for each peer whose word changed.
+     */
+    async measure() {
+        const topology = this.topology
+        if (! this.joined || ! topology?.stats) return []
+
+        const results = []
+        let changed = false
+
+        for (const peer of [...this.roster.values()]) {
+            if (! peer.connected) continue
+            const stats = await Promise.resolve(topology.stats(peer)).catch(() => null)
+            // The call or the peer went away while the browser was counting.
+            if (! stats || topology !== this.topology || ! this.roster.has(peer.id) || ! peer.connected) continue
+
+            results.push({ peer: peer.snapshot(), ...stats })
+            if (peer.quality === stats.quality) continue
+            peer.quality = stats.quality
+            changed = true
+            this.emit('quality', { peer: peer.snapshot(), ...stats })
+        }
+
+        if (changed) this.emit('peers', { peers: this.peers })
+
+        return results
+    }
+
     // ---- what a topology uses --------------------------------------------------
 
     /** The stream whose tracks go to the peers: the camera, or the screen in place of its video. */
@@ -1374,6 +1614,8 @@ export class CallClient extends EventTarget {
 
     connectionChanged(peer, connected) {
         peer.connected = connected
+        if (connected) this.everConnected = true
+        else peer.quality = null
         this.refreshState()
         this.emit('peers', { peers: this.peers })
     }
@@ -1410,13 +1652,31 @@ export class CallClient extends EventTarget {
 
     async requestMedia() {
         const video = this.media === 'video'
+        // No camera, or it is busy: a voice call rather than none.
+        const withoutCamera = async (audio, camera) => {
+            try {
+                return await this.getUserMedia({ audio, video: camera })
+            } catch (error) {
+                if (! camera || ! DEVICE_ERRORS.includes(error.name)) throw error
+
+                return this.getUserMedia({ audio, video: false })
+            }
+        }
+
         let stream
-        try {
-            stream = await this.getUserMedia({ audio: true, video })
-        } catch (error) {
-            // No camera, or it is busy: fall back to a voice call rather than fail.
-            if (! video || ! ['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error.name)) throw error
-            stream = await this.getUserMedia({ audio: true, video: false })
+        if (this.selected.microphone || (video && this.selected.camera)) {
+            try {
+                stream = await this.getUserMedia({
+                    audio: this.deviceConstraint(this.selected.microphone),
+                    video: video ? this.deviceConstraint(this.selected.camera) : false,
+                })
+            } catch (error) {
+                // A chosen device that is gone (unplugged since): the system's own.
+                if (! DEVICE_ERRORS.includes(error.name)) throw error
+                stream = await withoutCamera(true, video)
+            }
+        } else {
+            stream = await withoutCamera(true, video)
         }
 
         this.cameraStream = stream
@@ -1455,13 +1715,43 @@ export class CallClient extends EventTarget {
         if (connected) {
             clearTimeout(this.dropTimer)
             this.dropTimer = null
+            this.tryingSince = null
             this.setState('active')
         } else if (this.state === 'active' || this.state === 'reconnecting' || this.state === 'connecting') {
-            this.setState('reconnecting')
+            // Still the first attempt until the media has flowed once.
+            this.setState(this.everConnected ? 'reconnecting' : 'connecting')
+            this.tryingSince ??= Date.now()
             this.dropTimer ??= setTimeout(() => {
-                if (this.state === 'reconnecting') this.hangUp('dropped')
+                if (this.state !== 'reconnecting' && this.state !== 'connecting') return
+                if (! this.everConnected) this.explainFailure()
+                this.hangUp(this.everConnected ? 'dropped' : 'failed')
             }, this.reconnectTimeout)
         }
+    }
+
+    /**
+     * The other side hung up just as this side was about to give up on a first connection:
+     * both waited the same time for a path that never came, and whoever's timer ran out
+     * first ended the call. That is `failed` here too, not a plain hang-up.
+     */
+    gaveUpConnecting(reason) {
+        return (reason ?? 'hung_up') === 'hung_up' && this.joined && ! this.everConnected
+            && this.tryingSince != null && Date.now() - this.tryingSince >= this.reconnectTimeout * 0.8
+    }
+
+    /**
+     * The browsers never found a path to each other. With no TURN server among the ICE
+     * servers that is the usual reason (a strict NAT, a VPN, a corporate firewall on one
+     * side), so the developer gets a word about it in the console.
+     */
+    explainFailure() {
+        // The other side simply went away (closed the tab mid-ring): nothing to do with the network.
+        if (! [...this.roster.values()].some((peer) => peer.status === 'joined' && peer.alive)) return
+
+        const urls = this.iceServers.flatMap((server) => [server?.urls ?? server?.url ?? []].flat())
+        if (urls.some((url) => /^turns?:/i.test(String(url)))) return
+
+        globalThis.console?.warn?.('[holler] The call could not connect. No TURN server is configured, and some networks (strict NATs, VPNs, corporate firewalls) only connect through one: add a TURN server to the ICE servers.')
     }
 
     async handleSignal({ type, payload = {}, from }) {
@@ -1516,6 +1806,10 @@ export class CallClient extends EventTarget {
         this.releaseMedia()
         clearTimeout(this.dropTimer)
         this.dropTimer = null
+        clearTimeout(this.statsTimer)
+        this.statsTimer = null
+        this.everConnected = false
+        this.tryingSince = null
         this.call = null
         this.roster.clear()
         this.buffered = []

@@ -13,6 +13,36 @@ export type SignalType = 'offer' | 'answer' | 'ice' | 'reset' | 'state'
 
 export type MediaKind = 'video' | 'audio' | 'none'
 
+export type ConnectionQuality = 'good' | 'fair' | 'poor'
+
+export type DeviceKind = 'microphone' | 'camera' | 'speaker'
+
+/** The chosen devices by id; null is the system default. */
+export type SelectedDevices = Record<DeviceKind, string | null>
+
+export interface DeviceOption {
+    id: string
+    /** Empty until the person has allowed the camera or the microphone. */
+    label: string
+}
+
+export interface DeviceList {
+    microphones: DeviceOption[]
+    cameras: DeviceOption[]
+    /** Empty where the browser cannot pick a speaker. */
+    speakers: DeviceOption[]
+    selected: SelectedDevices
+}
+
+/** How a connection is doing: the round trip in milliseconds, the share of packets lost since the last look, the jitter in seconds, whether a TURN relay carries it. */
+export interface ConnectionStats {
+    rtt: number | null
+    loss: number
+    jitter: number | null
+    relayed: boolean
+    quality: ConnectionQuality
+}
+
 /** Another participant as the server describes them. */
 export interface CallPeer {
     id: string
@@ -126,6 +156,8 @@ export interface Peer {
     status: ParticipantStatus
     alive: boolean
     connected: boolean
+    /** Null until the connection is measured, and while it is down. */
+    quality: ConnectionQuality | null
     muted: boolean
     cameraOff: boolean
     sharing: boolean
@@ -159,6 +191,7 @@ export interface Topology {
     replaceVideo?(track: MediaStreamTrack | null): void | Promise<void>
     addTracks?(stream: MediaStream): void | Promise<void>
     channel?(peer: Peer, label: string): RTCDataChannel | null
+    stats?(peer: Peer): Promise<ConnectionStats | null> | ConnectionStats | null
     leave(): void
 }
 
@@ -170,6 +203,7 @@ export class MeshTopology implements Topology {
     signal(peer: Peer | null, type: string, payload: Record<string, unknown>, from?: string): Promise<void>
     connected(peer: Peer): boolean
     channel(peer: Peer, label: string): RTCDataChannel | null
+    stats(peer: Peer): Promise<ConnectionStats | null> | null
     leave(): void
 }
 
@@ -186,6 +220,10 @@ export interface CallClientOptions {
     maxParticipants?: number
     topology?: Topology | (new () => Topology) | ((call: Call, client: CallClient) => Topology) | null
     getUserMedia?: (constraints: MediaStreamConstraints) => Promise<MediaStream>
+    devices?: Partial<SelectedDevices>
+    enumerateDevices?: () => Promise<MediaDeviceInfo[]>
+    /** Milliseconds between looks at each connection's quality (3000); 0 turns it off. */
+    statsInterval?: number
 }
 
 export interface CallClientEventMap {
@@ -199,6 +237,8 @@ export interface CallClientEventMap {
     peerleft: CustomEvent<{ peer: Peer, reason: 'left' | 'declined' | 'missed' | 'dropped' }>
     peerstate: CustomEvent<{ peer: Peer, muted: boolean, cameraOff: boolean, sharing: boolean }>
     datachannel: CustomEvent<{ peer: Peer, channel: RTCDataChannel, label: string }>
+    quality: CustomEvent<{ peer: Peer } & ConnectionStats>
+    devices: CustomEvent<{ selected: SelectedDevices }>
     ended: CustomEvent<{ call: Call | null, reason: EndReason | string }>
     error: CustomEvent<{ error: SignalingError | Error, media?: boolean }>
 }
@@ -221,6 +261,9 @@ export class CallClient extends EventTarget {
     readonly peerCameraOff: boolean
     readonly peerSharing: boolean
     readonly remoteStream: MediaStream | null
+    readonly selected: SelectedDevices
+    /** The worst connection among the peers; null before anything is measured. */
+    readonly quality: ConnectionQuality | null
 
     start(): void
     stop(): void
@@ -237,6 +280,9 @@ export class CallClient extends EventTarget {
     stopSharing(): Promise<void>
     startMedia(kind?: 'audio' | 'video'): Promise<void>
     channel(label: string, peerId?: string | null): RTCDataChannel | null
+    devices(): Promise<DeviceList>
+    setDevice(kind: DeviceKind, id: string | null): Promise<void>
+    measure(): Promise<Array<{ peer: Peer } & ConnectionStats>>
     resumeCall(callId?: Call['id'] | null, options?: { answer?: boolean }): void
     handOff(): void
     takeOver(): Promise<void>
@@ -250,3 +296,5 @@ export class CallClient extends EventTarget {
 
 /** Resolves once the channel's send buffer has room again; await it before each large message. */
 export function drain(channel: RTCDataChannel): Promise<void>
+/** A connection in a word, from its round trip (ms) and the share of packets lost. */
+export function rateConnection(stats?: { rtt?: number | null, loss?: number | null }): ConnectionQuality

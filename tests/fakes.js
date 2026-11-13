@@ -41,6 +41,7 @@ export class FakeMediaStream {
     getAudioTracks() { return this.tracks.filter((track) => track.kind === 'audio') }
     getVideoTracks() { return this.tracks.filter((track) => track.kind === 'video') }
     addTrack(track) { this.tracks.push(track) }
+    removeTrack(track) { this.tracks = this.tracks.filter((candidate) => candidate !== track) }
 }
 
 export class FakeDataChannel extends EventTarget {
@@ -173,6 +174,11 @@ export class FakeRTCPeerConnection extends EventTarget {
         this.iceRestarts++
     }
 
+    /** What `getStats()` answers: a test sets `report` to a list of entries ({ id, type, … }). */
+    async getStats() {
+        return new Map((this.report ?? []).map((entry) => [entry.id, entry]))
+    }
+
     close() {
         this.closed = true
         this.connectionState = 'closed'
@@ -209,7 +215,17 @@ export function fakeDevices({ camera = true } = {}) {
 
     const getDisplayMedia = vi.fn(async () => new FakeMediaStream([new FakeTrack('video', 'screen')]))
 
-    return { getUserMedia, getDisplayMedia }
+    const enumerateDevices = vi.fn(async () => [
+        { kind: 'audioinput', deviceId: 'default', label: 'Default - Built-in microphone' },
+        { kind: 'audioinput', deviceId: 'mic-1', label: 'Built-in microphone' },
+        { kind: 'audioinput', deviceId: 'mic-2', label: 'Headset' },
+        { kind: 'videoinput', deviceId: 'cam-1', label: 'Built-in camera' },
+        { kind: 'videoinput', deviceId: 'cam-2', label: 'External camera' },
+        { kind: 'audiooutput', deviceId: 'out-1', label: 'Speakers' },
+        { kind: 'audiooutput', deviceId: '', label: '' },
+    ])
+
+    return { getUserMedia, getDisplayMedia, enumerateDevices }
 }
 
 export function installBrowserGlobals(devices = fakeDevices()) {

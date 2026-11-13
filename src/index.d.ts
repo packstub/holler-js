@@ -1,4 +1,4 @@
-// Type declarations for @packstub/calls: the public API the README documents.
+// Type declarations for @packstub/holler: the public API the README documents.
 // Methods the README marks as internal are left out on purpose.
 
 export type UserId = string | number
@@ -68,7 +68,7 @@ export interface SignalingError extends Error {
     reason?: 'busy' | 'not_ringing' | 'not_allowed' | 'full' | 'ended' | 'too_large' | 'too_many' | 'invalid_response' | string
 }
 
-/** What a signaling backend implements; `HttpSignaling` maps it onto Calls for Laravel's routes. */
+/** What a signaling backend implements; `HttpSignaling` maps it onto Holler for Laravel's routes. */
 export interface Signaling {
     start(callees: UserId | UserId[], tab: string): Promise<Call>
     answer(callId: Call['id'], tab: string): Promise<Call>

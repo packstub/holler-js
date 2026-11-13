@@ -1,6 +1,6 @@
 // Compiled by `npm run test:types` (tsc --noEmit): the README's examples against the declarations.
-import { CallClient, HttpSignaling, MeshTopology, drain, type Peer, type Topology } from '@packstub/calls'
-import { CallWidget, escape, safeUrl, templates } from '@packstub/calls/widget'
+import { CallClient, HttpSignaling, MeshTopology, drain, type Peer, type Topology } from '@packstub/holler'
+import { CallWidget, escape, safeUrl, templates } from '@packstub/holler/widget'
 
 const signaling = new HttpSignaling({
     routes: { poll: '/calls/poll', store: '/calls', answer: '/calls/__ID__/answer', decline: '/calls/__ID__/decline', hangup: '/calls/__ID__/hangup', signal: '/calls/__ID__/signals', ice: '/calls/ice-servers' },

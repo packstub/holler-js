@@ -1,29 +1,29 @@
 /**
- * @packstub/calls — CallWidget: the call UI for any page, no framework needed.
+ * @packstub/holler — CallWidget: the call UI for any page, no framework needed.
  *
  * One object draws everything a call needs on top of a CallClient: the incoming-call
  * toast, the call window (a tile per other participant, your own picture, mute, camera,
  * screen share, hang up), the chip shown while a pop-out window runs the call, and short
- * notices. Any element with `data-calls-call="<user id>"` rings that person, or adds them
+ * notices. Any element with `data-holler-call="<user id>"` rings that person, or adds them
  * to the call you are on.
  *
- *   import { CallWidget } from '@packstub/calls/widget'
+ *   import { CallWidget } from '@packstub/holler/widget'
  *   const widget = new CallWidget({ routes, csrf, iceServers, windowUrl })
  *
  * Three ways to make it yours, from light to deep:
- *   - CSS: every class is `calls-*`, the colours and sizes are custom properties on `.calls`
- *     (`--calls-bg`, `--calls-accent`…); keep `widget.css`, override a few variables, or
+ *   - CSS: every class is `holler-*`, the colours and sizes are custom properties on `.holler`
+ *     (`--holler-bg`, `--holler-accent`…); keep `widget.css`, override a few variables, or
  *     write your own stylesheet against the class names.
  *   - Templates: `templates.incoming`, `chip`, `window`, `tile` and `notice` are functions
  *     from a view model to an HTML string, rendered once each time the view appears and
- *     then kept up to date through a few `data-calls-*` hooks (see `patch()`): `text`,
+ *     then kept up to date through a few `data-holler-*` hooks (see `patch()`): `text`,
  *     `show`, `class`, `attr`, `src`, `video`, `action`, `ref`. Hand in your own markup with
  *     whichever hooks you keep; `labels` and `icons` are overridable the same way.
  *   - Subclass: `model()`, `tileModel()`, `render()` and the actions are methods.
  *
  * Events: every CallClient event is dispatched again on the widget's element as
- * `calls:<type>` (bubbling, so `document.addEventListener('calls:ended', …)` works),
- * plus `calls:sharing` { peer, sharing, spotlight } when someone's screen takes the stage.
+ * `holler:<type>` (bubbling, so `document.addEventListener('holler:ended', …)` works),
+ * plus `holler:sharing` { peer, sharing, spotlight } when someone's screen takes the stage.
  */
 
 import { CallClient, HttpSignaling } from './index.js'
@@ -34,10 +34,10 @@ const ACTIVE_STATES = ['calling', 'connecting', 'active', 'reconnecting']
 const TAKE_BACK_DELAY = 3000
 
 // The one-time tokens a page leaves for the pop-out it opens, and how long one is good for.
-const OPEN_TOKEN_KEY = 'packstub-calls:open:'
+const OPEN_TOKEN_KEY = 'holler:open:'
 const OPEN_TOKEN_TTL = 60000
 
-const svg = (paths) => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="calls-icon">${paths}</svg>`
+const svg = (paths) => `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="holler-icon">${paths}</svg>`
 
 /** Heroicons (MIT), outline, the few the widget needs. */
 export const icons = {
@@ -97,89 +97,89 @@ export const escape = (text) => String(text ?? '').replace(/[&<>"']/g, (char) =>
 /**
  * The default markup. Each function gets the view model (`model()` or `tileModel()`,
  * plus `labels` and `icons`) and returns the HTML rendered the first time the view
- * shows; from then on the `data-calls-*` hooks keep it current.
+ * shows; from then on the `data-holler-*` hooks keep it current.
  */
 export const templates = {
     incoming: (v) => `
-        <div class="calls-card calls-incoming" role="alertdialog" data-calls-scope data-calls-attr="aria-label:incomingLabel">
-            <div class="calls-person">
-                <img class="calls-avatar" alt="" data-calls-src="peerAvatar" data-calls-show="hasAvatar">
-                <span class="calls-avatar calls-avatar-initials" data-calls-text="initials" data-calls-show="!hasAvatar"></span>
-                <div class="calls-who">
-                    <div class="calls-name" data-calls-text="peerName"></div>
-                    <div class="calls-dim">${escape(v.labels.incoming)} <span data-calls-show="hasOthers">· <span data-calls-text="othersLabel"></span></span></div>
+        <div class="holler-card holler-incoming" role="alertdialog" data-holler-scope data-holler-attr="aria-label:incomingLabel">
+            <div class="holler-person">
+                <img class="holler-avatar" alt="" data-holler-src="peerAvatar" data-holler-show="hasAvatar">
+                <span class="holler-avatar holler-avatar-initials" data-holler-text="initials" data-holler-show="!hasAvatar"></span>
+                <div class="holler-who">
+                    <div class="holler-name" data-holler-text="peerName"></div>
+                    <div class="holler-dim">${escape(v.labels.incoming)} <span data-holler-show="hasOthers">· <span data-holler-text="othersLabel"></span></span></div>
                 </div>
             </div>
-            <div class="calls-actions">
-                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="decline" title="${escape(v.labels.decline)}" aria-label="${escape(v.labels.decline)}">${v.icons.phoneX}</button>
-                <button type="button" class="calls-btn calls-btn-success calls-pulse" data-calls-action="accept" title="${escape(v.labels.accept)}" aria-label="${escape(v.labels.accept)}">${v.icons.phone}</button>
+            <div class="holler-actions">
+                <button type="button" class="holler-btn holler-btn-danger" data-holler-action="decline" title="${escape(v.labels.decline)}" aria-label="${escape(v.labels.decline)}">${v.icons.phoneX}</button>
+                <button type="button" class="holler-btn holler-btn-success holler-pulse" data-holler-action="accept" title="${escape(v.labels.accept)}" aria-label="${escape(v.labels.accept)}">${v.icons.phone}</button>
             </div>
         </div>`,
 
     chip: (v) => `
-        <div class="calls-card calls-chip" data-calls-scope>
-            <button type="button" class="calls-person calls-chip-open" data-calls-action="focusWindow" title="${escape(v.labels.open_window)}">
-                <span class="calls-avatar calls-avatar-initials">${v.icons.window}</span>
-                <span class="calls-who">
-                    <span class="calls-name" data-calls-text="names"></span>
-                    <span class="calls-dim" data-calls-text="status"></span>
+        <div class="holler-card holler-chip" data-holler-scope>
+            <button type="button" class="holler-person holler-chip-open" data-holler-action="focusWindow" title="${escape(v.labels.open_window)}">
+                <span class="holler-avatar holler-avatar-initials">${v.icons.window}</span>
+                <span class="holler-who">
+                    <span class="holler-name" data-holler-text="names"></span>
+                    <span class="holler-dim" data-holler-text="status"></span>
                 </span>
             </button>
-            <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+            <button type="button" class="holler-btn holler-btn-danger" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
         </div>`,
 
     window: (v) => `
-        <div class="calls-card calls-window" role="region" data-calls-scope data-calls-attr="aria-label:names">
-            <div class="calls-header">
-                <div class="calls-name" data-calls-text="names"></div>
-                <div class="calls-dim" data-calls-text="status"></div>
+        <div class="holler-card holler-window" role="region" data-holler-scope data-holler-attr="aria-label:names">
+            <div class="holler-header">
+                <div class="holler-name" data-holler-text="names"></div>
+                <div class="holler-dim" data-holler-text="status"></div>
             </div>
-            <div class="calls-stage" data-calls-ref="stage" data-calls-attr="data-spotlight:spotlight data-strip:strip">
-                <div class="calls-grid" data-calls-ref="grid" data-calls-attr="data-count:count"></div>
-                <video autoplay playsinline muted class="calls-local" aria-label="${escape(v.labels.you)}" data-calls-video="localStream" data-calls-class="calls-mirror:mirror calls-hidden:hideLocal"></video>
+            <div class="holler-stage" data-holler-ref="stage" data-holler-attr="data-spotlight:spotlight data-strip:strip">
+                <div class="holler-grid" data-holler-ref="grid" data-holler-attr="data-count:count"></div>
+                <video autoplay playsinline muted class="holler-local" aria-label="${escape(v.labels.you)}" data-holler-video="localStream" data-holler-class="holler-mirror:mirror holler-hidden:hideLocal"></video>
             </div>
-            <div class="calls-controls">
-                <button type="button" class="calls-btn" data-calls-action="toggleMute" data-calls-class="calls-btn-off:muted" data-calls-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
-                <button type="button" class="calls-btn" data-calls-action="toggleCamera" data-calls-class="calls-btn-off:cameraOff" data-calls-attr="title:cameraTitle aria-label:cameraTitle">
-                    <span data-calls-show="!cameraOff">${v.icons.camera}</span><span data-calls-show="cameraOff">${v.icons.cameraOff}</span>
+            <div class="holler-controls">
+                <button type="button" class="holler-btn" data-holler-action="toggleMute" data-holler-class="holler-btn-off:muted" data-holler-attr="title:muteTitle aria-label:muteTitle">${v.icons.microphone}</button>
+                <button type="button" class="holler-btn" data-holler-action="toggleCamera" data-holler-class="holler-btn-off:cameraOff" data-holler-attr="title:cameraTitle aria-label:cameraTitle">
+                    <span data-holler-show="!cameraOff">${v.icons.camera}</span><span data-holler-show="cameraOff">${v.icons.cameraOff}</span>
                 </button>
-                <button type="button" class="calls-btn" data-calls-action="toggleShare" data-calls-show="canShare" data-calls-class="calls-btn-on:sharing" data-calls-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
-                <button type="button" class="calls-btn calls-btn-danger" data-calls-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
+                <button type="button" class="holler-btn" data-holler-action="toggleShare" data-holler-show="canShare" data-holler-class="holler-btn-on:sharing" data-holler-attr="title:shareTitle aria-label:shareTitle">${v.icons.screen}</button>
+                <button type="button" class="holler-btn holler-btn-danger" data-holler-action="hangUp" title="${escape(v.labels.hang_up)}" aria-label="${escape(v.labels.hang_up)}">${v.icons.phoneX}</button>
             </div>
         </div>`,
 
     tile: (v) => `
-        <div class="calls-tile" data-calls-scope data-calls-attr="data-peer-id:id data-peer-status:status data-role:role">
-            <video autoplay playsinline class="calls-remote" data-calls-video="stream" data-calls-class="calls-hidden:!showVideo"></video>
-            <div class="calls-placeholder" data-calls-show="!showVideo">
-                <img class="calls-avatar calls-avatar-lg" alt="" data-calls-src="avatar" data-calls-show="hasAvatar">
-                <span class="calls-avatar calls-avatar-lg calls-avatar-initials" data-calls-text="initials" data-calls-show="!hasAvatar"></span>
+        <div class="holler-tile" data-holler-scope data-holler-attr="data-peer-id:id data-peer-status:status data-role:role">
+            <video autoplay playsinline class="holler-remote" data-holler-video="stream" data-holler-class="holler-hidden:!showVideo"></video>
+            <div class="holler-placeholder" data-holler-show="!showVideo">
+                <img class="holler-avatar holler-avatar-lg" alt="" data-holler-src="avatar" data-holler-show="hasAvatar">
+                <span class="holler-avatar holler-avatar-lg holler-avatar-initials" data-holler-text="initials" data-holler-show="!hasAvatar"></span>
             </div>
-            <div class="calls-tile-name" data-calls-show="showName">
-                <span data-calls-text="name"></span>
-                <span class="calls-dim" data-calls-show="ringing">${escape(v.labels.calling)}</span>
-                <span class="calls-dim" data-calls-show="connecting">${escape(v.labels.connecting)}</span>
+            <div class="holler-tile-name" data-holler-show="showName">
+                <span data-holler-text="name"></span>
+                <span class="holler-dim" data-holler-show="ringing">${escape(v.labels.calling)}</span>
+                <span class="holler-dim" data-holler-show="connecting">${escape(v.labels.connecting)}</span>
             </div>
-            <div class="calls-badges">
-                <span class="calls-badge" data-calls-show="muted" data-peer="muted">${v.icons.speakerOff} ${escape(v.labels.peer_muted)}</span>
-                <span class="calls-badge" data-calls-show="sharing" data-peer="sharing">${v.icons.screen} ${escape(v.labels.peer_sharing)}</span>
-                <span class="calls-badge" data-calls-show="cameraOffBadge" data-peer="camera-off">${v.icons.cameraOff} ${escape(v.labels.peer_camera_off)}</span>
+            <div class="holler-badges">
+                <span class="holler-badge" data-holler-show="muted" data-peer="muted">${v.icons.speakerOff} ${escape(v.labels.peer_muted)}</span>
+                <span class="holler-badge" data-holler-show="sharing" data-peer="sharing">${v.icons.screen} ${escape(v.labels.peer_sharing)}</span>
+                <span class="holler-badge" data-holler-show="cameraOffBadge" data-peer="camera-off">${v.icons.cameraOff} ${escape(v.labels.peer_camera_off)}</span>
             </div>
         </div>`,
 
     // Read out through the widget's live region, which is there before the text changes (a live region added with its text is often not read).
-    notice: () => '<div class="calls-card calls-notice" data-calls-scope data-calls-text="notice"></div>',
+    notice: () => '<div class="holler-card holler-notice" data-holler-scope data-holler-text="notice"></div>',
 }
 
 /**
- * Bring a rendered view in line with its model through the `data-calls-*` hooks, without
- * touching nested views (anything inside another `data-calls-scope`):
- *   data-calls-text="key"                   textContent
- *   data-calls-show="key" | "!key"          hidden unless truthy
- *   data-calls-class="name:key name2:!key"  classes toggled
- *   data-calls-attr="name:key name2:key2"   attributes set (null or false removes, true sets it empty)
- *   data-calls-src="key"                    src (removed when empty, or not an http(s), relative, blob: or data:image/ URL)
- *   data-calls-video="key"                  a MediaStream as srcObject, playing
+ * Bring a rendered view in line with its model through the `data-holler-*` hooks, without
+ * touching nested views (anything inside another `data-holler-scope`):
+ *   data-holler-text="key"                   textContent
+ *   data-holler-show="key" | "!key"          hidden unless truthy
+ *   data-holler-class="name:key name2:!key"  classes toggled
+ *   data-holler-attr="name:key name2:key2"   attributes set (null or false removes, true sets it empty)
+ *   data-holler-src="key"                    src (removed when empty, or not an http(s), relative, blob: or data:image/ URL)
+ *   data-holler-video="key"                  a MediaStream as srcObject, playing
  */
 export function patch(root, model) {
     const read = (expr) => {
@@ -189,32 +189,32 @@ export function patch(root, model) {
         return negated ? ! value : value
     }
     const each = (attribute, apply) => {
-        const elements = [...root.querySelectorAll(`[${attribute}]`)].filter((el) => el.closest('[data-calls-scope]') === root)
+        const elements = [...root.querySelectorAll(`[${attribute}]`)].filter((el) => el.closest('[data-holler-scope]') === root)
         if (root.hasAttribute(attribute)) elements.unshift(root)
         for (const el of elements) apply(el, el.getAttribute(attribute))
     }
     const pairs = (spec) => spec.split(/\s+/).filter(Boolean).map((pair) => pair.split(':'))
 
-    each('data-calls-text', (el, key) => {
+    each('data-holler-text', (el, key) => {
         const text = String(read(key) ?? '')
         if (el.textContent !== text) el.textContent = text
     })
-    each('data-calls-show', (el, key) => { el.hidden = ! read(key) })
-    each('data-calls-class', (el, spec) => { for (const [name, key] of pairs(spec)) el.classList.toggle(name, Boolean(read(key))) })
-    each('data-calls-attr', (el, spec) => {
+    each('data-holler-show', (el, key) => { el.hidden = ! read(key) })
+    each('data-holler-class', (el, spec) => { for (const [name, key] of pairs(spec)) el.classList.toggle(name, Boolean(read(key))) })
+    each('data-holler-attr', (el, spec) => {
         for (const [name, key] of pairs(spec)) {
             const value = read(key)
             if (value === null || value === undefined || value === false) el.removeAttribute(name)
             else if (el.getAttribute(name) !== String(value === true ? '' : value)) el.setAttribute(name, value === true ? '' : value)
         }
     })
-    each('data-calls-src', (el, key) => {
+    each('data-holler-src', (el, key) => {
         // An SVG avatar is fine in an <img> (no scripts run there), not in an element of a custom template that would run them.
         const value = safeUrl(read(key), { svg: el.tagName === 'IMG' })
         if (! value) el.removeAttribute('src')
         else if (el.getAttribute('src') !== value) el.setAttribute('src', value)
     })
-    each('data-calls-video', (el, key) => attachStream(el, read(key) ?? null))
+    each('data-holler-video', (el, key) => attachStream(el, read(key) ?? null))
 }
 
 /**
@@ -322,7 +322,7 @@ function ringer() {
 function findWindow(features) {
     try {
         // The features shape only a window this opens; an existing pop-out keeps its own.
-        const found = window.open('', 'packstub-calls', features)
+        const found = window.open('', 'holler', features)
         if (! found) return null
         if (found.location.href === 'about:blank') return { window: found, blank: true }
         return found.location.origin === location.origin ? { window: found, blank: false } : null
@@ -367,7 +367,7 @@ export class CallWidget extends EventTarget {
      * @param {boolean} [options.inPopOut]  this page IS the pop-out: the widget fills it and does what the page that opened it asked (`?call=` / `?callee=` with a one-time `open` token; a link without one only shows the call)
      * @param {{ call?: string|number, callee?: string }} [options.openedFor]  what the pop-out does on load (read from the URL and checked against the token by default)
      * @param {string} [options.windowFeatures]  window.open features for the pop-out
-     * @param {string|null} [options.callSelector]  elements that ring someone on click; the user id is in `data-calls-call` (null: none)
+     * @param {string|null} [options.callSelector]  elements that ring someone on click; the user id is in `data-holler-call` (null: none)
      * @param {object} [options.labels]  texts to override
      * @param {object} [options.templates]  views to override: incoming, chip, window, tile, notice
      * @param {object} [options.icons]  SVG strings to override
@@ -380,7 +380,7 @@ export class CallWidget extends EventTarget {
         const {
             client = null, signaling = null, routes = null, csrf = null, iceServers = null, video = true, poll, reconnectTimeout, maxParticipants,
             root = document.body, windowUrl = null, inPopOut = false, popOut = windowUrl !== null, openedFor = null,
-            windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-calls-call]', startPolling = true,
+            windowFeatures = 'popup=yes,width=460,height=620', callSelector = '[data-holler-call]', startPolling = true,
             kind = 'call', iceTransportPolicy = 'all',
         } = options
 
@@ -442,24 +442,24 @@ export class CallWidget extends EventTarget {
 
     mount(root) {
         this.el = document.createElement('div')
-        this.el.className = this.inPopOut ? 'calls calls-popup' : 'calls'
+        this.el.className = this.inPopOut ? 'holler holler-popup' : 'holler'
         this.slots = {}
         for (const name of ['incoming', 'chip', 'window', 'notice']) {
             const slot = document.createElement('div')
-            slot.className = `calls-slot calls-slot-${name}`
+            slot.className = `holler-slot holler-slot-${name}`
             slot.hidden = true
             this.el.appendChild(slot)
             this.slots[name] = slot
         }
         // What a screen reader says: notices, and who is calling.
         this.live = document.createElement('div')
-        this.live.className = 'calls-live'
+        this.live.className = 'holler-live'
         this.live.setAttribute('role', 'status')
         this.live.setAttribute('aria-live', 'polite')
         this.el.appendChild(this.live)
         this.el.addEventListener('click', (event) => {
-            const button = event.target.closest('[data-calls-action]')
-            if (button && this.el.contains(button)) this.act(button.getAttribute('data-calls-action'))
+            const button = event.target.closest('[data-holler-action]')
+            if (button && this.el.contains(button)) this.act(button.getAttribute('data-holler-action'))
         })
         root.appendChild(this.el)
     }
@@ -572,25 +572,25 @@ export class CallWidget extends EventTarget {
             else if (error?.reason && error.status >= 400 && error.status < 500) this.show(error.message)
         })
 
-        // Everything the client says, again on the page: `calls:statechange`, `calls:ended`…
+        // Everything the client says, again on the page: `holler:statechange`, `holler:ended`…
         for (const type of ['statechange', 'incoming', 'update', 'localstream', 'remotestream', 'peers', 'peerjoined', 'peerleft', 'peerstate', 'ended', 'error']) {
             this.on(client, type, ({ detail }) => this.emit(type, detail))
         }
 
-        // Any button on the page that names a person, and a `calls:call` event with { user }.
+        // Any button on the page that names a person, and a `holler:call` event with { user }.
         if (this.callSelector) {
             this.on(document, 'click', (event) => {
                 const button = event.target.closest?.(this.callSelector)
-                if (button) this.callUser(button.getAttribute('data-calls-call'))
+                if (button) this.callUser(button.getAttribute('data-holler-call'))
             })
         }
-        this.on(window, 'calls:call', (event) => this.callUser(event.detail?.user))
+        this.on(window, 'holler:call', (event) => this.callUser(event.detail?.user))
         // A full page load: let go of the call so this or the next page can pick it up again.
         this.on(window, 'pagehide', () => client.leave())
     }
 
     emit(type, detail) {
-        this.el.dispatchEvent(new CustomEvent(`calls:${type}`, { detail, bubbles: true }))
+        this.el.dispatchEvent(new CustomEvent(`holler:${type}`, { detail, bubbles: true }))
         this.dispatchEvent(new CustomEvent(type, { detail }))
     }
 
@@ -743,7 +743,7 @@ export class CallWidget extends EventTarget {
             into.location.replace(url)
             this.popupWindow = into
         } else {
-            this.popupWindow = window.open(url, 'packstub-calls', this.windowFeatures)
+            this.popupWindow = window.open(url, 'holler', this.windowFeatures)
         }
         if (! this.popupWindow) {
             try { localStorage.removeItem(key) } catch {}
@@ -932,7 +932,7 @@ export class CallWidget extends EventTarget {
 
         if (focused && ! focused.isConnected) {
             // The first control (mute, or the chip's open button), not hang up: an Enter too many must not end the call.
-            const next = (this.views.window ?? this.views.chip)?.querySelector('[data-calls-action]')
+            const next = (this.views.window ?? this.views.chip)?.querySelector('[data-holler-action]')
             if (next) next.focus()
             else if (this.focusBefore?.isConnected) this.focusBefore.focus()
         }
@@ -960,21 +960,21 @@ export class CallWidget extends EventTarget {
 
     /** One tile per other participant, in seat order, kept by peer id so a video keeps playing. */
     renderTiles(spotlight) {
-        const grid = this.views.window.querySelector('[data-calls-ref="grid"]')
+        const grid = this.views.window.querySelector('[data-holler-ref="grid"]')
         if (! grid) return
 
         const kept = new Set()
         let previous = null
 
         for (const peer of this.peers) {
-            let tile = [...grid.children].find((child) => child.getAttribute('data-calls-peer') === String(peer.id)) ?? null
+            let tile = [...grid.children].find((child) => child.getAttribute('data-holler-peer') === String(peer.id)) ?? null
             const model = this.tileModel(peer, spotlight)
 
             if (! tile) {
                 const holder = document.createElement('div')
                 holder.innerHTML = this.templates.tile(model)
                 tile = holder.firstElementChild
-                tile.setAttribute('data-calls-peer', String(peer.id))
+                tile.setAttribute('data-holler-peer', String(peer.id))
             }
 
             if (tile.previousElementSibling !== previous || tile.parentNode !== grid) {
@@ -1009,7 +1009,7 @@ export class CallWidget extends EventTarget {
     }
 
     observeStage() {
-        const stage = this.views.window?.querySelector('[data-calls-ref="stage"]')
+        const stage = this.views.window?.querySelector('[data-holler-ref="stage"]')
         if (! stage || typeof ResizeObserver !== 'function') return
 
         this.resizeObserver?.disconnect()

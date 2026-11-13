@@ -1,8 +1,8 @@
-// Type declarations for @packstub/calls/widget: the public API the README documents.
+// Type declarations for @packstub/holler/widget: the public API the README documents.
 
 import type { CallClient, CallState, HttpSignalingRoutes, Peer, Signaling, UserId } from './index.js'
 
-/** A view: a function from the view model to an HTML string, kept current through the data-calls-* hooks. */
+/** A view: a function from the view model to an HTML string, kept current through the data-holler-* hooks. */
 export type Template<M = WidgetModel> = (model: M) => string
 
 export interface WidgetTemplates {
@@ -127,7 +127,7 @@ export const labels: WidgetLabels
 export const templates: WidgetTemplates
 export const icons: WidgetIcons
 
-/** Applies the data-calls-* hooks of a piece of markup to the model. */
+/** Applies the data-holler-* hooks of a piece of markup to the model. */
 export function patch(root: Element, model: Record<string, unknown>): void
 /** Puts a stream on a video element, playing it muted until the page has had a click when the browser asks for one. */
 export function attachStream(video: HTMLVideoElement, stream: MediaStream | null): void

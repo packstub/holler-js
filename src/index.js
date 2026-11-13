@@ -16,22 +16,29 @@
  *   answer(callId, tab)               → call
  *   decline(callId) / hangup(callId)  → call
  *   invite(callId, userId)            → call     (optional; adds someone to a running call)
+ *   hold(callId)                      → call     (optional; I step out of a running call without leaving it)
+ *   resume(callId, tab)               → call     (optional; back into the call I put on hold, the call I am in going on hold instead)
+ *   people(query, callId)             → { people: [{ id, name, avatar }] }   (optional; who can be rung, or added to that call)
  *   send(callId, type, payload, to)   → void     (offer | answer | ice | reset | state; `to` a user id, null for every other participant)
- *   poll({ after, call, tab, hold, kind }) → { call, incoming, signals, cursor }   (hold: this window wants my side; kind: only calls of that kind)
+ *   poll({ after, call, tab, hold, kind }) → { call, incoming, on_hold, signals, cursor }   (hold: this window wants my side; kind: only calls of that kind;
+ *                                                on_hold: the call I put on hold, if any. The poll parameter `hold` is about windows, not about that.)
  *   leave(callId, tab)                → void     (optional; a beacon as the page unloads)
  *
  * A failed request rejects with an Error carrying `status` (HTTP) and `reason` (`busy`, `not_ringing`,
  * `not_allowed`, `full`, `ended`, `too_large` from the Laravel backend).
  *
- * A `call` is { id, kind, status: ringing|active|ended, end_reason, role: caller|callee, seat, joined,
- * peers: [{ id, name, avatar, seat, status: ringing|joined|left|declined|missed|dropped, held, seen_ago }],
+ * A `call` is { id, kind, status: ringing|active|ended, end_reason, role: caller|callee, seat, joined, on_hold,
+ * peers: [{ id, name, avatar, seat, status: ringing|joined|on_hold|left|declined|missed|dropped, held, seen_ago }],
  * held, answered_at }, plus `peer`, `peer_held` and `peer_seen_ago` for the first peer.
  * Those three are all a 1-on-1 backend needs to send: without `peers`, `seat` and
  * `joined` the client derives them (the caller has seat 0, the callee seat 1).
  * `seat` is the order people were invited in; between two participants the lower
  * seat makes the offer. `joined` is whether I am in (false while the call rings me).
  * `held` means another window of mine holds my side of this call (a pop-out); a
- * peer's `held` that it has a live window on the call.
+ * peer's `held` that it has a live window on the call. `on_hold` is something else:
+ * the person stepped out of the call (`hold()`) and is still on it, with no window
+ * and no media until they resume. A call of mine that is on hold is no window's
+ * call; every window of mine learns of it from the poll (`heldCall`).
  *
  * A signal is { id, call, type, payload, from }; `from` is the sender's user id (a
  * 1-on-1 backend may leave it out).
@@ -43,7 +50,8 @@
  * so leftovers from an old connection are ignored.
  *
  * Events (CallClient extends EventTarget, detail on each):
- *   statechange { state }   idle | calling | ringing | connecting | active | reconnecting | elsewhere
+ *   statechange { state }   idle | calling | ringing | connecting | active | reconnecting | waiting | elsewhere
+ *                           (`waiting`: everyone else in the call put it on hold)
  *   incoming    { call }    someone is ringing you
  *   update      { call }    the call's server state changed (held, status, peers…)
  *   localstream { stream }  your camera/mic (or screen) stream, also after a share switch
@@ -51,6 +59,8 @@
  *   peers       { peers }   the roster changed: someone joined, left, connected, muted…
  *   peerjoined  { peer }    a peer is in the call
  *   peerleft    { peer, reason }  a peer is gone (left | declined | missed | dropped)
+ *   peerheld    { peer, onHold }  a peer put the call on hold, or is back
+ *   held        { call }    the call I have on hold changed: put on hold, resumed, or ended meanwhile (null)
  *   peerstate   { peer, muted, cameraOff, sharing }  a peer muted, turned the camera off or shares the screen
  *   quality     { peer, quality, rtt, loss, jitter, relayed }  how the connection to a peer is doing changed: good | fair | poor
  *   devices     { selected }  a microphone, camera or speaker was chosen, or one was plugged in or out (ask `devices()` again)
@@ -113,7 +123,7 @@ const sdp = (text) => text.endsWith('\r\n') ? text : `${text.replace(/\r?\n$/, '
 export class HttpSignaling {
     /**
      * @param {object} options
-     * @param {{ poll: string, store: string, answer: string, decline: string, hangup: string, signal: string, leave?: string, invite?: string }} options.routes
+     * @param {{ poll: string, store: string, answer: string, decline: string, hangup: string, signal: string, leave?: string, invite?: string, hold?: string, resume?: string, people?: string, ice?: string }} options.routes
      *   Per-call routes contain `__ID__` where the call id goes.
      * @param {Record<string, string>} [options.headers] e.g. { 'X-CSRF-TOKEN': token }
      * @param {Record<string, string>} [options.beaconFields] form fields sent with the leave beacon, e.g. { _token: token }
@@ -131,6 +141,8 @@ export class HttpSignaling {
 
         // Only a backend with the route can add people to a call, or hand out ICE servers per call.
         if (! routes?.invite) this.invite = undefined
+        if (! routes?.hold || ! routes?.resume) this.hold = this.resume = undefined
+        if (! routes?.people) this.people = undefined
         if (! routes?.ice) this.configuration = undefined
     }
 
@@ -188,6 +200,16 @@ export class HttpSignaling {
     decline(callId) { return this.request('POST', this.url('decline', callId)) }
     hangup(callId) { return this.request('POST', this.url('hangup', callId)) }
     invite(callId, userId) { return this.request('POST', this.url('invite', callId), { callee: userId }) }
+    hold(callId) { return this.request('POST', this.url('hold', callId)) }
+    resume(callId, tab = null) { return this.request('POST', this.url('resume', callId), { tab }) }
+
+    /** Who can be rung, or added to a call (`callId`), for what was typed: `{ people: [{ id, name, avatar }] }`. */
+    people(query = '', callId = null) {
+        const params = new URLSearchParams({ q: String(query) })
+        if (callId) params.set('call', String(callId))
+
+        return this.request('GET', `${this.routes.people}${this.routes.people.includes('?') ? '&' : '?'}${params}`)
+    }
 
     send(callId, type, payload, to = null) {
         return this.request('POST', this.url('signal', callId), to === null || to === undefined ? { type, payload } : { type, payload, to })
@@ -583,7 +605,12 @@ export class MeshTopology {
     }
 
     signal(peer, type, payload) {
-        return peer ? this.links.get(peer.id)?.signal(type, payload) : undefined
+        if (! peer) return undefined
+        // An offer from someone on the call I have no connection to (back from hold, and their
+        // `reset` got lost on the way): answer it on a new one rather than drop it.
+        if (type === 'offer' && ! this.links.has(peer.id) && peer.status === 'joined') this.connect(peer, { polite: true })
+
+        return this.links.get(peer.id)?.signal(type, payload)
     }
 
     connected(peer) {
@@ -674,6 +701,8 @@ export class CallClient extends EventTarget {
         this.tab = randomId()
         this.state = 'idle'
         this.call = null
+        // The call I put on hold (as the server presents it), from any window of mine; null when there is none.
+        this.heldCall = null
         this.localStream = null
         this.cameraStream = null
         this.screenStream = null
@@ -846,8 +875,18 @@ export class CallClient extends EventTarget {
     }
 
     /** `asked` is the call id the poll named, so a call the server no longer returns is known to be gone. */
-    async handlePoll({ call, incoming, signals = [], cursor }, asked = null) {
+    async handlePoll({ call, incoming, on_hold: onHold = null, signals = [], cursor }, asked = null) {
         if (typeof cursor === 'number' && cursor > this.cursor) this.cursor = cursor
+
+        // The call this window has was put on hold (from here, or from another window of mine):
+        // this window lets go of it without an ending.
+        if (onHold && this.call && String(onHold.id) === String(this.call.id)) {
+            this.park(onHold)
+            call = null
+            asked = null
+        } else {
+            this.setHeldCall(onHold)
+        }
 
         if (incoming && this.state === 'idle') {
             await this.ring(incoming)
@@ -1066,6 +1105,131 @@ export class CallClient extends EventTarget {
         return this.call
     }
 
+    // ---- on hold ---------------------------------------------------------------
+
+    /**
+     * Step out of the call I am in without leaving it: the others stay on it and see
+     * me on hold, this window closes its connections and the camera and is free for
+     * another call. `resumeHeld()` brings me back. Also from a window that only
+     * watches the call (a main tab while the pop-out runs it). One call on hold at
+     * a time; needs a backend with `hold` and `resume`.
+     */
+    hold() {
+        // Asked twice at once (a double click): one request.
+        this.holding ??= this.putOnHold().finally(() => { this.holding = null })
+
+        return this.holding
+    }
+
+    async putOnHold() {
+        if (! this.signaling.hold) throw new Error('This signaling backend cannot put a call on hold.')
+        if (! this.canHold()) throw new Error('No call to put on hold.')
+
+        const id = this.call.id
+        let call
+        try {
+            call = await this.signaling.hold(id)
+        } catch (error) {
+            this.emit('error', { error })
+            throw error
+        }
+
+        if (this.call && String(this.call.id) === String(id)) this.park(call)
+
+        return call
+    }
+
+    /** Whether the call I am in can be put on hold: running, mine (here or in my pop-out), and none on hold already. */
+    canHold() {
+        const call = this.call
+
+        return Boolean(call) && Boolean(this.signaling.hold) && ! this.heldCall && call.status === 'active'
+            && (call.joined ?? true) && this.state !== 'ringing' && this.state !== 'idle'
+    }
+
+    /**
+     * Back into the call I put on hold. A call I am in meanwhile goes on hold in its
+     * place (a swap), and one I am still ringing someone on is given up. A window
+     * that leaves calls to a pop-out (`resumes: false`) only tells the server; the
+     * window that then opens for the call connects.
+     */
+    resumeHeld() {
+        // Asked twice at once (a double click): one request, not a second one refused over a call that is back.
+        this.resuming ??= this.resumeFromHold().finally(() => { this.resuming = null })
+
+        return this.resuming
+    }
+
+    async resumeFromHold() {
+        const held = this.heldCall
+        if (! held) return null
+        if (! this.signaling.resume) throw new Error('This signaling backend cannot put a call on hold.')
+        if (this.state === 'ringing') throw new Error('A call is ringing.')
+
+        let call
+        try {
+            call = await this.signaling.resume(held.id, this.resumes ? this.tab : null)
+        } catch (error) {
+            this.emit('error', { error })
+            // Gone meanwhile (the other side hung up): the next poll says so too.
+            if (error?.status === 410) this.setHeldCall(null)
+            throw error
+        }
+
+        // The call this window had is on hold now, or given up: let go of it without an ending.
+        // The next poll names the call that took its place on hold.
+        this.heldCall = null
+        if (this.call) this.reset()
+        else this.epoch++
+        this.emit('held', { call: null })
+
+        if (this.resumes) await this.resume(call)
+        else this.schedule(0)
+
+        return call
+    }
+
+    /** Hang up the call I have on hold, without coming back to it. */
+    async endHeld() {
+        const held = this.heldCall
+        if (! held) return
+        this.epoch++
+        this.setHeldCall(null)
+        await this.signaling.hangup(held.id).catch(() => {})
+        this.schedule(0)
+    }
+
+    /** My side of this window's call went on hold: everything down, no `ended`, and the call kept as `heldCall`. */
+    park(call) {
+        this.heldCall = call
+        this.reset()
+        this.emit('held', { call })
+    }
+
+    setHeldCall(call) {
+        const signature = (held) => held ? `${held.id}|${(held.peers ?? []).map((peer) => `${peer.id}:${peer.name}:${peer.status}`).join(',')}` : ''
+        const changed = signature(call) !== signature(this.heldCall)
+        this.heldCall = call ?? null
+        if (changed) this.emit('held', { call: this.heldCall })
+    }
+
+    // ---- people ----------------------------------------------------------------
+
+    /** Who can be added to the call I am in (or rung, without one) for what was typed: `[{ id, name, avatar }]`. Needs a backend with `people`. */
+    async search(query = '') {
+        if (! this.signaling.people) return []
+        const inCall = this.call && this.call.status !== 'ended' && (this.call.joined ?? true)
+        let found
+        try {
+            found = await this.signaling.people(query, inCall ? this.call.id : null)
+        } catch (error) {
+            this.emit('error', { error })
+            throw error
+        }
+
+        return Array.isArray(found) ? found : (found?.people ?? [])
+    }
+
     /** Whether one more person fits: in a call (here or in my pop-out), with a backend that invites, under `maxParticipants`. */
     canInvite() {
         const inCall = Boolean(this.call) && (this.call.joined ?? true) && this.state !== 'ringing' && this.call.status !== 'ended'
@@ -1242,7 +1406,8 @@ export class CallClient extends EventTarget {
         for (const entry of listed) {
             const id = String(entry.id)
             seen.add(id)
-            const gone = ! ['ringing', 'joined'].includes(entry.status ?? 'joined')
+            const gone = ! ['ringing', 'joined', 'on_hold'].includes(entry.status ?? 'joined')
+            const onHold = entry.status === 'on_hold'
             let peer = this.roster.get(id)
 
             // Invited again at a new seat (they left and this window did not see it in between):
@@ -1258,17 +1423,30 @@ export class CallClient extends EventTarget {
                 peer.update(entry)
                 this.roster.set(id, peer)
                 changed = true
-                if (this.joined) this.topology.connect(peer, { polite: peer.seat < this.seat })
+                // Someone on hold has no window to connect to: they offer when they are back.
+                if (this.joined && ! onHold) this.topology.connect(peer, { polite: peer.seat < this.seat })
                 if (peer.status === 'joined') this.emit('peerjoined', { peer: peer.snapshot() })
                 continue
             }
 
             const wasJoined = peer.status === 'joined'
+            const wasOnHold = peer.status === 'on_hold'
             if (peer.update(entry)) changed = true
 
             if (gone) {
                 this.dropPeer(peer, entry.status)
                 changed = true
+            } else if (onHold && ! wasOnHold) {
+                // They stepped out: their connection is closed on their side, so it goes here too.
+                this.topology?.disconnect(peer)
+                Object.assign(peer, { connected: false, quality: null, stream: null, muted: false, cameraOff: false, sharing: false })
+                this.emit('peerstate', { peer: peer.snapshot(), muted: false, cameraOff: false, sharing: false })
+                this.emit('peerheld', { peer: peer.snapshot(), onHold: true })
+                if (this.joined) this.refreshState()
+            } else if (wasOnHold && peer.status === 'joined') {
+                // Back: their `reset` and a fresh offer follow, which build the new connection.
+                this.emit('peerheld', { peer: peer.snapshot(), onHold: false })
+                if (this.joined) this.refreshState()
             } else if (! wasJoined && peer.status === 'joined') {
                 this.emit('peerjoined', { peer: peer.snapshot() })
             }
@@ -1305,6 +1483,7 @@ export class CallClient extends EventTarget {
         this.joined = true
 
         for (const peer of this.roster.values()) {
+            if (peer.status === 'on_hold') continue
             this.topology.connect(peer, fresh ? { polite: false, reset: true } : { polite: peer.seat < this.seat })
         }
 
@@ -1398,17 +1577,16 @@ export class CallClient extends EventTarget {
         const previousMedia = this.media
         const epoch = this.epoch
         this.media = kind
-        this.cameraStream = null
 
         let stream
         try {
-            stream = await this.acquireMedia()
+            // The stream in use stays the call's while the prompt is open, so muting or
+            // hanging up meanwhile still reaches the microphone that is on.
+            this.mediaRequest ??= this.requestMedia().finally(() => { this.mediaRequest = null })
+            stream = await this.mediaRequest
         } catch (error) {
             // Nothing changed: the next startMedia() asks again.
-            if (epoch === this.epoch) {
-                this.cameraStream = previous
-                this.media = previousMedia
-            }
+            if (epoch === this.epoch) this.media = previousMedia
             this.emit('error', { error, media: true })
             throw error
         }
@@ -1417,6 +1595,7 @@ export class CallClient extends EventTarget {
         // camera and microphone go off again instead of staying on with no call.
         if (epoch !== this.epoch) {
             stream?.getTracks().forEach((track) => track.stop())
+            previous?.getTracks().forEach((track) => track.stop())
             if (this.cameraStream === stream) this.cameraStream = null
             if (! this.joined) this.releaseMedia()
             throw new Error('The call was given up.')
@@ -1705,18 +1884,30 @@ export class CallClient extends EventTarget {
 
     /**
      * active while at least one peer's media flows and their window is alive;
-     * reconnecting otherwise, and dropped after the timeout.
+     * waiting while everyone else in the call has it on hold; reconnecting
+     * otherwise, and dropped after the timeout.
      */
     refreshState() {
         if (! this.joined || ! this.call || this.call.status !== 'active') return
 
-        const connected = [...this.roster.values()].some((peer) => peer.status === 'joined' && peer.alive && this.topology.connected(peer))
+        const peers = [...this.roster.values()]
+        const connected = peers.some((peer) => peer.status === 'joined' && peer.alive && this.topology.connected(peer))
 
         if (connected) {
             clearTimeout(this.dropTimer)
             this.dropTimer = null
             this.tryingSince = null
             this.setState('active')
+        } else if (peers.some((peer) => peer.status === 'on_hold') && ! peers.some((peer) => peer.status === 'joined')) {
+            // Nobody to be connected to, and nothing wrong: they come back when they resume.
+            clearTimeout(this.dropTimer)
+            this.dropTimer = null
+            this.tryingSince = null
+            this.setState('waiting')
+        } else if (this.state === 'waiting') {
+            // Someone is back (or joins): connecting to them, with the usual patience.
+            this.setState('connecting')
+            this.refreshState()
         } else if (this.state === 'active' || this.state === 'reconnecting' || this.state === 'connecting') {
             // Still the first attempt until the media has flowed once.
             this.setState(this.everConnected ? 'reconnecting' : 'connecting')
@@ -1754,8 +1945,10 @@ export class CallClient extends EventTarget {
         globalThis.console?.warn?.('[holler] The call could not connect. No TURN server is configured, and some networks (strict NATs, VPNs, corporate firewalls) only connect through one: add a TURN server to the ICE servers.')
     }
 
-    async handleSignal({ type, payload = {}, from }) {
+    async handleSignal({ type, payload, from }) {
         if (! this.joined || ! this.topology) return
+        // A backend may relay `null`; one bad signal must not take the rest of the batch with it.
+        if (payload === null || typeof payload !== 'object') payload = {}
 
         // A 1-on-1 backend names no sender: the one peer it is.
         const senderId = from ?? this.call?.peer?.id ?? null
@@ -1769,7 +1962,7 @@ export class CallClient extends EventTarget {
             peer.connected = false
             // Their old media ended with their old page: no frozen picture until the new one arrives.
             if (peer.stream && peer.stream !== this.topology.link?.(peer.id)?.stream) peer.stream = null
-            if (this.roster.size === 1 && (this.state === 'active' || this.state === 'reconnecting')) this.setState('connecting')
+            if (this.roster.size === 1 && (this.state === 'active' || this.state === 'reconnecting' || this.state === 'waiting')) this.setState('connecting')
             if (peer.muted || peer.cameraOff || peer.sharing) {
                 peer.muted = peer.cameraOff = peer.sharing = false
                 this.emit('peerstate', { peer: peer.snapshot(), muted: false, cameraOff: false, sharing: false })

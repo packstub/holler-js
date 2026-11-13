@@ -238,15 +238,16 @@ export function installBrowserGlobals(devices = fakeDevices()) {
 }
 
 const fail = (message, status, reason = null) => Object.assign(new Error(message), { status, reason })
-const LIVE = ['ringing', 'joined']
+const LIVE = ['ringing', 'joined', 'on_hold']
 
 /**
  * The signaling backend in memory. `clientFor(userId)` hands out an object with
  * the signaling interface for that user, the way HttpSignaling would for a
  * signed-in browser. A call has a participant per person (the caller joined from
  * the start at seat 0, every invitee ringing at the next seat); it ends when
- * fewer than two people are left in it. State is inspectable and can be pushed
- * around by a test (end a call, make a side go quiet).
+ * fewer than two people are left in it. Someone who puts a call on hold stays on it
+ * (`on_hold`) without a window until they resume. State is inspectable and can be
+ * pushed around by a test (end a call, make a side go quiet).
  */
 export class FakeServer {
     constructor({ holdSeconds = 5 } = {}) {
@@ -258,6 +259,8 @@ export class FakeServer {
         this.now = 0
         this.names = {}
         this.log = []
+        // Who `people()` can find: every named user unless a test sets the list.
+        this.directory = null
     }
 
     /** Give a user a display name (ids are used otherwise). */
@@ -280,7 +283,8 @@ export class FakeServer {
             if (! me(found)) throw fail('Forbidden', 403)
             return found
         }
-        const busy = (user) => [...server.calls.values()].some((c) => c.status !== 'ended' && c.participants.some((p) => p.user_id === user && LIVE.includes(p.status)))
+        // A call someone put on hold themselves does not keep them from another.
+        const busy = (user) => [...server.calls.values()].some((c) => c.status !== 'ended' && c.participants.some((p) => p.user_id === user && LIVE.includes(p.status) && p.status !== 'on_hold'))
         const liveCallsOf = (user) => [...server.calls.values()].filter((c) => c.status !== 'ended' && c.participants.some((p) => p.user_id === user && LIVE.includes(p.status)))
 
         return {
@@ -288,9 +292,10 @@ export class FakeServer {
                 server.log.push([userId, 'start', callees, tab])
                 const list = [].concat(callees ?? [])
                 if (! list.length || list.includes(userId)) throw fail('This person cannot be called.', 422, 'not_allowed')
-                const mine = liveCallsOf(userId)
-                // A call with me on it does not count: I leave it.
-                const anyBusy = list.some((user) => liveCallsOf(user).some((c) => ! mine.includes(c)))
+                // The calls I leave for this one; a call I put on hold waits for me.
+                const mine = liveCallsOf(userId).filter((c) => me(c).status !== 'on_hold')
+                // A call with me on it does not count: I leave it. Nor does one they put on hold.
+                const anyBusy = list.some((user) => liveCallsOf(user).some((c) => ! mine.includes(c) && c.participants.find((p) => p.user_id === user).status !== 'on_hold'))
 
                 // Refused before I leave anything: my current call stays.
                 if (anyBusy) throw fail('This person is on another call.', 409, 'busy')
@@ -353,12 +358,60 @@ export class FakeServer {
                 return server.present(found, userId)
             },
 
+            async hold(callId) {
+                server.log.push([userId, 'hold', callId])
+                const found = call(callId)
+                const mine = me(found)
+                if (liveCallsOf(userId).some((c) => c !== found && me(c).status === 'on_hold')) throw fail('You already have a call on hold.', 422, 'not_allowed')
+                if (found.status === 'ended') throw fail('This call has ended.', 410, 'ended')
+                if (mine.status !== 'on_hold') {
+                    if (found.status !== 'active' || mine.status !== 'joined') throw fail('Only a call you are in can be put on hold.', 422, 'not_allowed')
+                    server.putOnHold(found, mine)
+                }
+
+                return server.present(found, userId)
+            },
+
+            async resume(callId, tab = null) {
+                server.log.push([userId, 'resume', callId, tab])
+                const found = call(callId)
+                const mine = me(found)
+                if (found.status === 'ended') throw fail('This call has ended.', 410, 'ended')
+                if (mine.status !== 'on_hold') throw fail('This call is not on hold.', 422, 'not_allowed')
+
+                // A swap: the call I am in goes on hold, one I am still ringing someone on is given up.
+                for (const other of liveCallsOf(userId)) {
+                    if (other === found || me(other).status !== 'joined') continue
+                    if (other.status === 'active') server.putOnHold(other, me(other))
+                    else server.withdraw(other, me(other))
+                }
+
+                Object.assign(mine, { status: 'joined', tab: tab ?? null, seen_at: server.now })
+
+                return server.present(found, userId, tab)
+            },
+
+            async people(query = '', callId = null) {
+                server.log.push([userId, 'people', query, callId])
+                const found = callId ? call(callId) : null
+                const words = String(query).trim().toLowerCase()
+                const people = (server.directory ?? Object.keys(server.names))
+                    .filter((id) => id !== userId && ! found?.participants.some((p) => p.user_id === id && LIVE.includes(p.status)))
+                    .map((id) => ({ id, name: server.names[id] ?? id, avatar: null }))
+                    .filter((person) => person.name.toLowerCase().includes(words))
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .slice(0, 8)
+
+                return { people }
+            },
+
             async send(callId, type, payload, to = null) {
                 server.log.push([userId, 'send', callId, type, to])
                 const found = call(callId)
                 if (found.status === 'ended') throw fail('This call has ended.', 410, 'ended')
                 if (me(found).status !== 'joined') throw fail('That person is not on this call.', 422, 'not_allowed')
-                const recipients = found.participants.filter((p) => p.user_id !== userId && LIVE.includes(p.status) && (to === null || String(p.user_id) === String(to)))
+                // Nothing is kept for someone on hold: they connect afresh when they resume.
+                const recipients = found.participants.filter((p) => p.user_id !== userId && LIVE.includes(p.status) && p.status !== 'on_hold' && (to === null || String(p.user_id) === String(to)))
                 let last = null
                 for (const recipient of recipients) {
                     last = { id: server.nextSignalId++, call: found.id, to_user_id: recipient.user_id, from: userId, type, payload }
@@ -381,14 +434,15 @@ export class FakeServer {
 
                 let current = currentId ? server.calls.get(Number(currentId)) ?? null : (mine.find((c) => me(c).status === 'joined') ?? null)
                 // Not mine, or no longer mine (I left a call that goes on), or of another kind; an ended call is still shown, for its reason.
-                if (current && (! me(current) || (kind !== null && current.kind !== kind) || (current.status !== 'ended' && ! LIVE.includes(me(current).status)))) current = null
+                // A call I put on hold is no window's call: it comes back as `on_hold`.
+                if (current && (! me(current) || (kind !== null && current.kind !== kind) || (current.status !== 'ended' && (! LIVE.includes(me(current).status) || me(current).status === 'on_hold')))) current = null
 
                 let held = false
                 if (current && currentId && tab && hold && current.status !== 'ended') {
                     const side = me(current)
                     const previous = side.tab
                     const stale = side.seen_at !== null && server.now - side.seen_at > server.holdSeconds
-                    if (LIVE.includes(side.status) && (previous === null || previous === tab || stale)) {
+                    if (previous === null || previous === tab || stale) {
                         const reclaimed = side.seen_at !== null && previous !== tab
                         side.tab = tab
                         side.seen_at = server.now
@@ -398,11 +452,15 @@ export class FakeServer {
                 }
 
                 const incoming = mine.find((c) => me(c).status === 'ringing' && c !== current) ?? null
+                const onHold = mine.find((c) => me(c).status === 'on_hold') ?? null
+                // Asking is the heartbeat of someone away.
+                if (onHold) me(onHold).seen_at = server.now
                 const signals = held ? server.signals.filter((s) => s.to_user_id === userId && s.call === current.id && s.id > after) : []
 
                 return {
                     call: current ? server.present(current, userId, tab) : null,
                     incoming: incoming ? server.present(incoming, userId, tab) : null,
+                    on_hold: onHold ? server.present(onHold, userId, tab) : null,
                     signals: signals.map(({ id, call: callId, type, payload, from }) => ({ id, call: callId, type, payload, from })),
                     cursor: signals.length ? signals.at(-1).id : after,
                 }
@@ -416,17 +474,24 @@ export class FakeServer {
      */
     withdraw(found, mine, status = null) {
         if (found.status === 'ended' || ! LIVE.includes(mine.status)) return
-        mine.status = status ?? (mine.status === 'joined' ? 'left' : 'declined')
+        mine.status = status ?? (mine.status === 'ringing' ? 'declined' : 'left')
         mine.tab = null
 
         const live = found.participants.filter((p) => LIVE.includes(p.status))
-        const joined = live.filter((p) => p.status === 'joined')
+        // Someone away with the call on hold is still in it: the call waits for them.
+        const joined = live.filter((p) => p.status === 'joined' || p.status === 'on_hold')
 
         // The caller gives up before anyone joined: everyone's ring stops.
         if (found.status === 'ringing' && mine.user_id === found.caller_id) return this.end(found.id, 'cancelled')
         if (live.length < 2 || joined.length === 0) {
             this.end(found.id, found.status === 'active' ? (mine.status === 'dropped' ? 'dropped' : 'hung_up') : (mine.status === 'missed' ? 'missed' : 'declined'))
         }
+    }
+
+    /** Someone steps out of a running call: no window, no signals kept, still on it. */
+    putOnHold(found, mine) {
+        Object.assign(mine, { status: 'on_hold', tab: null, seen_at: this.now })
+        this.signals = this.signals.filter((s) => ! (s.call === found.id && s.to_user_id === mine.user_id))
     }
 
     present(found, me, tab = null) {
@@ -449,6 +514,7 @@ export class FakeServer {
             role: found.caller_id === me ? 'caller' : 'callee',
             seat: mine.seat,
             joined: mine.status === 'joined',
+            on_hold: mine.status === 'on_hold',
             answered_at: found.answered_at,
             held: isHeld(mine) && mine.tab !== tab,
             peers,

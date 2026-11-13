@@ -3,11 +3,11 @@
 
 export type UserId = string | number
 
-export type CallState = 'idle' | 'calling' | 'ringing' | 'connecting' | 'active' | 'reconnecting' | 'elsewhere'
+export type CallState = 'idle' | 'calling' | 'ringing' | 'connecting' | 'active' | 'reconnecting' | 'waiting' | 'elsewhere'
 
 export type EndReason = 'declined' | 'cancelled' | 'missed' | 'hung_up' | 'failed' | 'dropped' | 'busy'
 
-export type ParticipantStatus = 'ringing' | 'joined' | 'left' | 'declined' | 'missed' | 'dropped'
+export type ParticipantStatus = 'ringing' | 'joined' | 'on_hold' | 'left' | 'declined' | 'missed' | 'dropped'
 
 export type SignalType = 'offer' | 'answer' | 'ice' | 'reset' | 'state'
 
@@ -54,6 +54,13 @@ export interface CallPeer {
     seen_ago?: number | null
 }
 
+/** Someone the people search found. */
+export interface Person {
+    id: string
+    name: string
+    avatar: string | null
+}
+
 /** A call as the server returns it from `poll`, `start`, `answer` and the rest. */
 export interface Call {
     id: string | number
@@ -63,6 +70,8 @@ export interface Call {
     role: 'caller' | 'callee'
     seat?: number
     joined?: boolean
+    /** I put this call on hold: still on it, away until I resume. */
+    on_hold?: boolean
     peers?: CallPeer[]
     answered_at: string | null
     held?: boolean
@@ -83,6 +92,8 @@ export interface Signal {
 export interface PollResult {
     call: Call | null
     incoming: Call | null
+    /** The call I put on hold, if any. */
+    on_hold?: Call | null
     signals: Signal[]
     cursor: number
 }
@@ -105,6 +116,9 @@ export interface Signaling {
     decline(callId: Call['id']): Promise<Call>
     hangup(callId: Call['id']): Promise<Call>
     invite?(callId: Call['id'], userId: UserId): Promise<Call>
+    hold?(callId: Call['id']): Promise<Call>
+    resume?(callId: Call['id'], tab?: string | null): Promise<Call>
+    people?(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] } | Person[]>
     send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
     poll(options: { after?: number, call?: Call['id'] | null, tab?: string | null, hold?: boolean, kind?: string | null }): Promise<PollResult>
     leave?(callId: Call['id'], tab: string): void
@@ -120,6 +134,9 @@ export interface HttpSignalingRoutes {
     signal: string
     leave?: string
     invite?: string
+    hold?: string
+    resume?: string
+    people?: string
     ice?: string
 }
 
@@ -134,6 +151,8 @@ export interface HttpSignalingOptions {
 
 export class HttpSignaling implements Signaling {
     constructor(options: HttpSignalingOptions)
+    /** Sent with every request; change it to carry a fresh CSRF token. */
+    headers: Record<string, string>
     routes: HttpSignalingRoutes
     kind: string | null
     start(callees: UserId | UserId[], tab: string): Promise<Call>
@@ -141,6 +160,9 @@ export class HttpSignaling implements Signaling {
     decline(callId: Call['id']): Promise<Call>
     hangup(callId: Call['id']): Promise<Call>
     invite(callId: Call['id'], userId: UserId): Promise<Call>
+    hold(callId: Call['id']): Promise<Call>
+    resume(callId: Call['id'], tab?: string | null): Promise<Call>
+    people(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] }>
     send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
     poll(options?: { after?: number, call?: Call['id'] | null, tab?: string | null, hold?: boolean, kind?: string | null }): Promise<PollResult>
     leave(callId: Call['id'], tab: string): void
@@ -171,7 +193,7 @@ export interface TopologyHost {
     channelLabels: string[]
     readonly seat: number
     localSource(): MediaStream | null
-    send(type: string, payload: Record<string, unknown>, to?: string | null): Promise<unknown>
+    send(type: string, payload: Record<string, unknown>, to?: string | null): void
     remoteStreamFrom(peer: Peer, stream: MediaStream): void
     connectionChanged(peer: Peer, connected: boolean): void
     negotiated(peer: Peer): void
@@ -204,6 +226,14 @@ export class MeshTopology implements Topology {
     connected(peer: Peer): boolean
     channel(peer: Peer, label: string): RTCDataChannel | null
     stats(peer: Peer): Promise<ConnectionStats | null> | null
+    /** The peer rebuilt their side (a `reset` signal): a new connection, answering theirs. */
+    reset(peer: Peer): void
+    /** Whether a `state` signal comes from an older connection of the peer's. */
+    stale(peer: Peer, payload: Record<string, unknown>): boolean
+    /** The screen in place of the camera on every connection (null: nothing). */
+    replaceVideo(track: MediaStreamTrack | null): Promise<void> | void
+    /** Media turned on during the call: sent to every peer. */
+    addTracks(source: MediaStream | null): void
     leave(): void
 }
 
@@ -236,6 +266,8 @@ export interface CallClientEventMap {
     peerjoined: CustomEvent<{ peer: Peer }>
     peerleft: CustomEvent<{ peer: Peer, reason: 'left' | 'declined' | 'missed' | 'dropped' }>
     peerstate: CustomEvent<{ peer: Peer, muted: boolean, cameraOff: boolean, sharing: boolean }>
+    peerheld: CustomEvent<{ peer: Peer, onHold: boolean }>
+    held: CustomEvent<{ call: Call | null }>
     datachannel: CustomEvent<{ peer: Peer, channel: RTCDataChannel, label: string }>
     quality: CustomEvent<{ peer: Peer } & ConnectionStats>
     devices: CustomEvent<{ selected: SelectedDevices }>
@@ -248,6 +280,8 @@ export class CallClient extends EventTarget {
 
     readonly state: CallState
     readonly call: Call | null
+    /** The call I put on hold, from any window of mine. */
+    readonly heldCall: Call | null
     readonly peers: Peer[]
     readonly peer: Peer | null
     readonly localStream: MediaStream | null
@@ -268,24 +302,31 @@ export class CallClient extends EventTarget {
     start(): void
     stop(): void
     destroy(): void
-    callUser(users: UserId | UserId[]): Promise<void>
+    callUser(users: UserId | UserId[]): Promise<Call>
     accept(): Promise<void>
     decline(): Promise<void>
-    invite(userId: UserId): Promise<void>
+    invite(userId: UserId): Promise<Call>
     canInvite(): boolean
+    /** Step out of the call without leaving it; `resumeHeld()` comes back. */
+    hold(): Promise<Call>
+    canHold(): boolean
+    resumeHeld(): Promise<Call | null>
+    endHeld(): Promise<void>
+    /** Who can be added to the call I am in (or rung) for what was typed. */
+    search(query?: string): Promise<Person[]>
     hangUp(): Promise<void>
     setMuted(muted: boolean): void
     setCameraOff(off: boolean): void
     shareScreen(): Promise<void>
     stopSharing(): Promise<void>
-    startMedia(kind?: 'audio' | 'video'): Promise<void>
+    startMedia(kind?: 'audio' | 'video'): Promise<MediaStream | null>
     channel(label: string, peerId?: string | null): RTCDataChannel | null
     devices(): Promise<DeviceList>
     setDevice(kind: DeviceKind, id: string | null): Promise<void>
     measure(): Promise<Array<{ peer: Peer } & ConnectionStats>>
     resumeCall(callId?: Call['id'] | null, options?: { answer?: boolean }): void
     handOff(): void
-    takeOver(): Promise<void>
+    takeOver(): Promise<boolean>
     leave(): void
 
     addEventListener<K extends keyof CallClientEventMap>(type: K, listener: (event: CallClientEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void

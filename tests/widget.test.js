@@ -121,8 +121,8 @@ describe('the widget', () => {
         expect(ana.el.querySelector('[data-holler-action="toggleMute"]').title).toBe('Unmute')
     })
 
-    it('rings whoever a data-holler-call element names, and adds them to the call once on one', async () => {
-        const ion = widget('ion')
+    it('rings whoever a data-holler-call element names, and with duringCall add, adds them to the call once on one', async () => {
+        const ion = widget('ion', { duringCall: 'add' })
         // The others share this document in the test: only Ion's widget listens to its buttons.
         widget('ana', { callSelector: null })
         widget('mihai', { callSelector: null })
@@ -374,7 +374,7 @@ describe('the widget', () => {
     })
 
     it('ships the default templates for anyone building on them', () => {
-        expect(Object.keys(templates)).toEqual(['incoming', 'chip', 'window', 'tile', 'notice'])
+        expect(Object.keys(templates)).toEqual(['incoming', 'chip', 'window', 'tile', 'person', 'held', 'prompt', 'notice'])
     })
 })
 
@@ -699,5 +699,213 @@ describe('settings, a call in the background and the connection', () => {
         expect(badge().hidden).toBe(false)
         expect(tile(ion, 'ana').dataset.quality).toBe('poor')
         expect(seen).toEqual(['poor'])
+    })
+})
+
+describe('adding someone, and a call on hold', () => {
+    const action = (instance, name) => instance.el.querySelector(`[data-holler-action="${name}"]`)
+    const shown = (instance, name) => { const el = action(instance, name); return Boolean(el) && ! el.closest('[hidden]') }
+
+    it('finds people from the call window and adds the one picked', async () => {
+        server.name('dana', 'Dana Ionescu')
+        const { ion } = await connected()
+
+        expect(shown(ion, 'togglePeople')).toBe(true)
+        action(ion, 'togglePeople').click()
+        await settle()
+
+        const options = () => [...ion.el.querySelectorAll('[data-holler-add]')]
+        // Everyone who can be added, without Ana, who is on the call.
+        expect(options().map((el) => el.textContent.trim().replace(/\s+/g, ' '))).toEqual(['DI Dana Ionescu', 'MR Mihai Rusu'])
+        expect(document.activeElement).toBe(ion.el.querySelector('[data-holler-people-search]'))
+
+        const input = ion.el.querySelector('[data-holler-people-search]')
+        input.value = 'mih'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        // One request once the typing pauses.
+        expect(server.log.filter(([, type]) => type === 'people')).toHaveLength(1)
+        await settle(300)
+        expect(options().map((el) => el.getAttribute('data-holler-add'))).toEqual(['mihai'])
+
+        input.value = 'zzz'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        await settle(300)
+        expect(options()).toEqual([])
+        expect(ion.el.querySelector('[data-holler-show="noPeople"]').hidden).toBe(false)
+
+        input.value = 'mih'
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        await settle(300)
+        options()[0].click()
+        await settle()
+
+        expect(server.log.find(([, type]) => type === 'invite')).toEqual(['ion', 'invite', 1, 'mihai'])
+        expect(ion.peopleOpen).toBe(false)
+        expect(tiles(ion).map((el) => el.dataset.peerId)).toEqual(['ana', 'mihai'])
+    })
+
+    it('has no add button without a backend that finds people, or once the call is full', async () => {
+        const signaling = server.clientFor('ion')
+        delete signaling.people
+        const ion = widget('ion', { signaling })
+        const ana = widget('ana', { callSelector: null })
+        await ion.callUser('ana')
+        await settle()
+        action(ana, 'accept').click()
+        await settle()
+
+        expect(shown(ion, 'togglePeople')).toBe(false)
+        expect(shown(ana, 'togglePeople')).toBe(true)
+
+        const full = widget('mihai', { maxParticipants: 2, callSelector: null })
+        await ana.hangUp()
+        await settle()
+        await full.callUser('ana')
+        await settle()
+        expect(shown(full, 'togglePeople')).toBe(false)
+    })
+
+    it('asks what to do when Call is pressed during a call, and adds the person when told to', async () => {
+        const { ion } = await connected({ ana: { callSelector: null } })
+        widget('mihai', { callSelector: null })
+        document.body.insertAdjacentHTML('afterbegin', '<button id="mihai" data-holler-call="mihai" data-holler-name="Mihai Rusu">Call</button><button id="ana" data-holler-call="ana">Call</button>')
+
+        document.getElementById('mihai').click()
+        await settle()
+
+        expect(visible(ion, 'prompt')).not.toBeNull()
+        expect(visible(ion, 'prompt').textContent).toContain('Mihai Rusu')
+        expect(['promptAdd', 'promptHold', 'promptEnd', 'promptCancel'].map((name) => shown(ion, name))).toEqual([true, true, true, true])
+        // Nothing happened yet.
+        expect(server.log.some(([, type]) => type === 'invite')).toBe(false)
+
+        action(ion, 'promptCancel').click()
+        expect(visible(ion, 'prompt')).toBeNull()
+        expect(ion.state).toBe('active')
+
+        document.getElementById('mihai').click()
+        action(ion, 'promptAdd').click()
+        await settle()
+
+        expect(visible(ion, 'prompt')).toBeNull()
+        expect(server.log.find(([, type]) => type === 'invite')).toEqual(['ion', 'invite', 1, 'mihai'])
+
+        // Someone already on the call: nothing to ask.
+        document.getElementById('ana').click()
+        expect(visible(ion, 'prompt')).toBeNull()
+        expect(visible(ion, 'notice').textContent).toBe('Already on this call')
+    })
+
+    it('puts the call on hold and rings the other person, then swaps back with Resume', async () => {
+        const { ion, ana } = await connected({ ana: { callSelector: null } })
+        const mihai = widget('mihai', { callSelector: null })
+        document.body.insertAdjacentHTML('afterbegin', '<button id="mihai" data-holler-call="mihai">Call</button>')
+
+        document.getElementById('mihai').click()
+        action(ion, 'promptHold').click()
+        await settle()
+
+        expect(server.participant(1, 'ion').status).toBe('on_hold')
+        expect(ion.client.call.id).toBe(2)
+        expect(ion.state).toBe('calling')
+        // The bar of the call on hold, with the call window of the new one.
+        expect(visible(ion, 'held').textContent).toContain('Ana Popescu')
+        expect(visible(ion, 'held').textContent).toContain('On hold')
+        expect(visible(ion, 'window')).not.toBeNull()
+
+        // Ana waits: her window stays, and says why.
+        expect(ana.state).toBe('waiting')
+        expect(visible(ana, 'window')).not.toBeNull()
+        expect(ana.el.querySelector('.holler-header .holler-dim').textContent).toBe('On hold')
+        expect(tile(ana, 'ion').querySelector('[data-holler-show="onHold"]').hidden).toBe(false)
+
+        action(mihai, 'accept').click()
+        await settle()
+        connectAll(ion, mihai)
+        await settle()
+        // One call on hold at a time: no hold button, and Call on someone else offers no hold.
+        expect(shown(ion, 'hold')).toBe(false)
+
+        action(ion, 'resumeHeld').click()
+        await settle()
+        connectAll(ion, ana)
+        await settle()
+
+        expect(ion.client.call.id).toBe(1)
+        expect(ion.state).toBe('active')
+        expect(ana.state).toBe('active')
+        expect(mihai.state).toBe('waiting')
+        expect(visible(ion, 'held').textContent).toContain('Mihai Rusu')
+        // A swap is not an ending.
+        expect(visible(ion, 'notice')?.textContent ?? '').not.toContain('ended')
+
+        action(ion, 'endHeld').click()
+        await settle()
+
+        expect(visible(ion, 'held')).toBeNull()
+        expect(server.calls.get(2).status).toBe('ended')
+        expect(mihai.state).toBe('idle')
+        expect(ion.state).toBe('active')
+    })
+
+    it('ends the call and rings the other person when told to', async () => {
+        const { ion, ana } = await connected({ ana: { callSelector: null } })
+        widget('mihai', { callSelector: null })
+
+        window.dispatchEvent(new CustomEvent('holler:call', { detail: { user: 'mihai', name: 'Mihai' } }))
+        action(ion, 'promptEnd').click()
+        await settle()
+
+        expect(server.calls.get(1).status).toBe('ended')
+        expect(ana.state).toBe('idle')
+        expect(ion.client.call.id).toBe(2)
+        expect(visible(ion, 'held')).toBeNull()
+    })
+
+    it('holds from the call window, and says so when the call on hold ended meanwhile', async () => {
+        const { ion, ana } = await connected()
+
+        expect(shown(ion, 'hold')).toBe(true)
+        action(ion, 'hold').click()
+        await settle()
+
+        expect(ion.state).toBe('idle')
+        expect(visible(ion, 'window')).toBeNull()
+        expect(visible(ion, 'held')).not.toBeNull()
+        expect(visible(ana, 'notice').textContent).toBe('Ion Caliman put the call on hold')
+
+        action(ana, 'hangUp').click()
+        await settle()
+
+        expect(visible(ion, 'held')).toBeNull()
+        expect(visible(ion, 'notice').textContent).toBe('The call on hold ended')
+    })
+
+    it('resumes a call on hold in the pop-out when calls open in one', async () => {
+        const opened = []
+        vi.stubGlobal('open', vi.fn((url) => { opened.push(url); return { focus() {}, closed: false } }))
+        const page = widget('ion', { windowUrl: '/calls/window?call=__ID__&callee=__USER__' })
+        const popOut = widget('ion', { inPopOut: true, windowUrl: '/calls/window?call=__ID__&callee=__USER__', openedFor: { callee: 'ana', trusted: true }, callSelector: null })
+        const ana = widget('ana', { callSelector: null })
+        await settle()
+        action(ana, 'accept').click()
+        await settle()
+        connectAll(popOut, ana)
+        await settle()
+        expect(page.state).toBe('elsewhere')
+
+        // Held from the pop-out's own window.
+        action(popOut, 'hold').click()
+        await settle()
+        expect(page.state).toBe('idle')
+        expect(visible(page, 'held')).not.toBeNull()
+
+        action(page, 'resumeHeld').click()
+        await settle()
+
+        expect(server.participant(1, 'ion').status).toBe('joined')
+        expect(opened.at(-1)).toContain('/calls/window?call=1')
+        expect(visible(page, 'held')).toBeNull()
+        expect(visible(page, 'notice')?.textContent ?? '').not.toContain('ended')
     })
 })

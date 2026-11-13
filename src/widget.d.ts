@@ -1,6 +1,6 @@
 // Type declarations for @packstub/holler/widget: the public API the README documents.
 
-import type { CallClient, CallState, DeviceKind, HttpSignalingRoutes, Peer, Signaling, UserId } from './index.js'
+import type { Call, CallClient, CallState, DeviceKind, HttpSignalingRoutes, Peer, Person, Signaling, UserId } from './index.js'
 
 /** A view: a function from the view model to an HTML string, kept current through the data-holler-* hooks. */
 export type Template<M = WidgetModel> = (model: M) => string
@@ -10,6 +10,9 @@ export interface WidgetTemplates {
     chip: Template
     window: Template
     tile: Template<TileModel>
+    person: Template<Person & { initials: string, hasAvatar: boolean, labels: WidgetLabels, icons: WidgetIcons }>
+    held: Template
+    prompt: Template
     notice: Template
 }
 
@@ -42,7 +45,8 @@ export interface WidgetModel {
     hideLocal: boolean
     localStream: MediaStream | null
     count: number
-    spotlight: Peer | null
+    /** The id of the peer whose screen has the stage. */
+    spotlight: string | null
     strip: 'top' | 'right' | 'none' | null
     muteTitle: string
     cameraTitle: string
@@ -53,6 +57,15 @@ export interface WidgetModel {
     hasCameras: boolean
     hasSpeakers: boolean
     canNotify: boolean
+    canAdd: boolean
+    peopleOpen: boolean
+    noPeople: boolean
+    canHold: boolean
+    hasHeld: boolean
+    heldNames: string
+    promptName: string
+    promptCanAdd: boolean
+    promptCanHold: boolean
     [key: string]: unknown
 }
 
@@ -62,12 +75,13 @@ export interface TileModel extends Peer {
     hasAvatar: boolean
     ringing: boolean
     connecting: boolean
+    onHold: boolean
     showVideo: boolean
     showName: boolean
     cameraOffBadge: boolean
     /** Connected, with a weak connection. */
     poor: boolean
-    role: string
+    role: string | null
     labels: WidgetLabels
     icons: WidgetIcons
     [key: string]: unknown
@@ -89,9 +103,12 @@ export interface CallWidgetOptions {
     windowUrl?: string | null
     popOut?: boolean
     inPopOut?: boolean
-    openedFor?: { call?: string | number, callee?: string } | null
+    /** `trusted`: asked for by the page that opened this window; without it a `callee` is not rung. */
+    openedFor?: { call?: string | number, callee?: string, trusted?: boolean } | null
     windowFeatures?: string
     callSelector?: string | null
+    /** What a call element does while I am on a call: ask (add, hold and call, end and call), or add at once (`ask`). */
+    duringCall?: 'ask' | 'add'
     labels?: Partial<WidgetLabels>
     templates?: Partial<WidgetTemplates>
     icons?: Partial<WidgetIcons>
@@ -112,6 +129,8 @@ export class CallWidget extends EventTarget {
     templates: WidgetTemplates
     icons: WidgetIcons
     readonly state: CallState
+    /** The call I put on hold. */
+    readonly heldCall: Call | null
     readonly peers: Peer[]
     readonly muted: boolean
     readonly cameraOff: boolean
@@ -119,11 +138,26 @@ export class CallWidget extends EventTarget {
 
     start(): void
     destroy(): void
-    callUser(user: UserId): Promise<void> | void
+    callUser(user: UserId, options?: { name?: string | null }): Promise<void> | void
     accept(): Promise<void> | void
     decline(): Promise<void>
     hangUp(): Promise<void>
     add(user: UserId): Promise<void>
+    /** Put the call I am on on hold; resolves to whether it is. */
+    hold(): Promise<boolean>
+    resumeHeld(): Promise<void>
+    endHeld(): Promise<void>
+    togglePeople(): void
+    closePeople(): void
+    /** Search for what was typed, once the person pauses. */
+    searchPeople(query: string): void
+    /** The answers to the question asked when Call is pressed during a call. */
+    promptAdd(): void
+    promptHold(): void
+    promptEnd(): void
+    promptCancel(): void
+    /** Bring the pop-out back, or open it again. */
+    focusWindow(): void
     toggleMute(): void
     toggleCamera(): void
     toggleShare(): Promise<void>
@@ -138,9 +172,9 @@ export class CallWidget extends EventTarget {
     announce(text: string): void
 
     model(): WidgetModel
-    tileModel(peer: Peer, spotlight?: Peer | null): TileModel
+    tileModel(peer: Peer, spotlight?: string | null): TileModel
     render(): void
-    renderTiles(spotlight?: Peer | null): void
+    renderTiles(spotlight?: string | null): void
     placeStrip(width: number, height: number): void
 }
 

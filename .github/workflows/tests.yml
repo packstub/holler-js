@@ -34,5 +34,8 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run the tests against the minified build
+        run: npm run test:dist
+
       - name: Check the type declarations
         run: npm run test:types

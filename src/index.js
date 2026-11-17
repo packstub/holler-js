@@ -20,8 +20,8 @@
  *   resume(callId, tab)               → call     (optional; back into the call I put on hold, the call I am in going on hold instead)
  *   people(query, callId)             → { people: [{ id, name, avatar }] }   (optional; who can be rung, or added to that call)
  *   send(callId, type, payload, to)   → void     (offer | answer | ice | reset | state; `to` a user id, null for every other participant)
- *   poll({ after, call, tab, hold, kind }) → { call, incoming, on_hold, signals, cursor }   (hold: this window wants my side; kind: only calls of that kind;
- *                                                on_hold: the call I put on hold, if any. The poll parameter `hold` is about windows, not about that.)
+ *   poll({ after, call, tab, claim, kind }) → { call, incoming, on_hold, signals, cursor }   (claim: this window wants my side; kind: only calls of that kind;
+ *                                                on_hold: the call I put on hold, if any. The poll parameter `claim` is about windows, not about that.)
  *   leave(callId, tab)                → void     (optional; a beacon as the page unloads)
  *
  * A failed request rejects with an Error carrying `status` (HTTP) and `reason` (`busy`, `not_ringing`,

@@ -1,6 +1,6 @@
 {
     "name": "@packstub/holler",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "description": "WebRTC calls (audio, video, screen share), 1-on-1 and small groups over a mesh, with a pluggable signaling backend and topology, plus a ready-made call widget. Framework-agnostic; the engine behind packstub/holler and packstub/filament-holler.",
     "type": "module",
     "main": "src/index.js",

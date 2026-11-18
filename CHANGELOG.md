@@ -2,7 +2,7 @@
 
 All notable changes to `@packstub/holler` are documented in this file.
 
-## Unreleased
+## 1.0.0 — 2026-11-18
 
 First release of `@packstub/holler`: the browser side of WebRTC calls, 1-on-1 and in small groups, as plain ES modules with no dependencies, with a minified build in `dist/` for pages that load them without a bundler. It powers both Holler for Laravel and Filament Holler.
 

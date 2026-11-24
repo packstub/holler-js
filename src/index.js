@@ -367,6 +367,7 @@ export class RelaySignaling extends EventTarget {
 
         // Signals came over the backend: more may follow, and the next poll tells it these were read.
         this.owed = (data?.signals?.length ?? 0) > 0
+        const wasHub = this.isHub
         this.observe(data?.call ?? null, callId)
         // Whoever reached me over the backend is answered that way, until a channel reaches them.
         for (const signal of data?.signals ?? []) {
@@ -374,7 +375,8 @@ export class RelaySignaling extends EventTarget {
             if (from !== null && this.way(from) === 'wait') this.impatient.add(from)
         }
         this.release()
-        if (this.isHub) this.pass(data?.relay ?? null)
+        // Also the last answer of a call that just ended: the others hear it from the hub.
+        if (this.isHub || (wasHub && data?.relay)) this.pass(data?.relay ?? null)
         this.setMode(this.isHub ? 'hub' : 'polling')
 
         return data
@@ -610,9 +612,11 @@ export class RelaySignaling extends EventTarget {
                     // The backend has no answer for me through the hub: I ask it myself.
                     if (this.quiet) this.wake()
                 } else {
-                    if (told.call) this.observe(told.call, this.view.id)
+                    const resting = this.quiet
+                    const call = this.view.id
+                    if (told.call) this.observe(told.call, call)
                     // Told while resting: applied now, not at the next (local) poll.
-                    if (this.quiet && this.view) this.client?.deliver({ ...told, signals: [] }, { call: this.view.id })
+                    if (resting) this.client?.deliver({ ...told, signals: [] }, { call })
                 }
             }
 

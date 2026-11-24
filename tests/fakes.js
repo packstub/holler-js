@@ -489,7 +489,7 @@ export class FakeServer {
                 if (current && currentId && current.status !== 'ended') me(current).relay = Boolean(relay)
 
                 return {
-                    ...(claimed && server.isHub(current, me(current)) ? { relay: server.answerFor(current, present ?? []) } : {}),
+                    ...(server.answersFor(current, userId, tab, claimed) ? { relay: server.answerFor(current, present ?? []) } : {}),
                     call: current ? server.present(current, userId, tab) : null,
                     incoming: incoming ? server.present(incoming, userId, tab) : null,
                     on_hold: onHold ? server.present(onHold, userId, tab) : null,
@@ -533,6 +533,15 @@ export class FakeServer {
     /** The hub of a call: its caller, in the call with a window that relays. */
     isHub(found, p) {
         return Boolean(this.relay) && found.status !== 'ended' && p.user_id === found.caller_id && p.status === 'joined' && p.relay === true && this.isClaimed(p)
+    }
+
+    /** Whether this poll is the hub's; also the last one, of a call that just ended. */
+    answersFor(found, userId, tab, claimed) {
+        if (! found) return false
+        const mine = found.participants.find((p) => p.user_id === userId)
+        if (found.status === 'ended') return Boolean(this.relay) && userId === found.caller_id && mine.relay === true && tab !== null
+
+        return claimed && this.isHub(found, mine)
     }
 
     /**

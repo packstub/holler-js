@@ -195,12 +195,15 @@ describe('relayed signaling', () => {
 
     it('ends the call for the quiet ones when it ends on the server', async () => {
         const { ion, ana, callId } = await pair()
+        const from = mark()
 
         server.end(callId, 'hung_up')
         await settle(300)
 
         expect(ion.events('ended').map((event) => event.reason)).toEqual(['hung_up'])
         expect(ana.events('ended').map((event) => event.reason)).toEqual(['hung_up'])
+        // She heard it from the hub: her first request afterwards is an idle poll, naming no call.
+        expect(since(from, 'ana')[0].slice(1, 3)).toEqual(['poll', null])
         expect([ion.state, ana.state]).toEqual(['idle', 'idle'])
         expect(ana.relay.mode).toBe('polling')
     })

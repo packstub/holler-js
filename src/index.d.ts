@@ -52,6 +52,10 @@ export interface CallPeer {
     status: ParticipantStatus
     claimed?: boolean
     seen_ago?: number | null
+    /** Relayed signaling: this participant is the hub, the one window that polls for the others. */
+    hub?: boolean
+    /** Relayed signaling: their window takes signaling over a data channel (null: it has not said yet). */
+    relay?: boolean | null
 }
 
 /** Someone the people search found. */
@@ -79,11 +83,14 @@ export interface Call {
     peer?: CallPeer | null
     peer_claimed?: boolean
     peer_seen_ago?: number | null
+    /** Relayed signaling: I am the hub of this call. */
+    hub?: boolean
     [key: string]: unknown
 }
 
 export interface Signal {
-    id: number
+    /** Absent on a signal that did not come from the backend (`deliver()`). */
+    id?: number
     call: string | number
     type: SignalType | string
     payload: Record<string, unknown>
@@ -97,6 +104,28 @@ export interface PollResult {
     on_hold?: Call | null
     signals: Signal[]
     cursor: number
+    /** For the hub of relayed signaling: what to pass on to the peers it named as `present`. */
+    relay?: RelayAnswer
+}
+
+/** What a hub's poll brings back for the peers connected to it. */
+export interface RelayAnswer {
+    /** By peer id: what that peer's own poll would have answered (`call`, `on_hold`, and anything else the backend adds). */
+    views?: Record<string, Partial<PollResult> & Record<string, unknown>>
+    /** The peers with signals waiting on the backend: each is told to poll once. */
+    pending?: string[]
+}
+
+export interface PollOptions {
+    after?: number
+    call?: Call['id'] | null
+    tab?: string | null
+    claim?: boolean
+    kind?: string | null
+    /** From `RelaySignaling`: this window takes signaling over a data channel. */
+    relay?: boolean
+    /** From `RelaySignaling`, the hub only: the peers connected to it, whose side the backend keeps alive. */
+    present?: string[] | null
 }
 
 export interface RtcConfiguration {
@@ -121,9 +150,13 @@ export interface Signaling {
     resume?(callId: Call['id'], tab?: string | null): Promise<Call>
     people?(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] } | Person[]>
     send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
-    poll(options: { after?: number, call?: Call['id'] | null, tab?: string | null, claim?: boolean, kind?: string | null }): Promise<PollResult>
+    poll(options: PollOptions): Promise<PollResult>
     leave?(callId: Call['id'], tab: string): void
     configuration?(): Promise<RtcConfiguration>
+    /** Called once by the `CallClient` this adapter is given to, for an adapter that works with the call itself. */
+    attach?(client: CallClient): void
+    /** Called by `destroy()`. */
+    detach?(client: CallClient): void
 }
 
 export interface HttpSignalingRoutes {
@@ -165,9 +198,60 @@ export class HttpSignaling implements Signaling {
     resume(callId: Call['id'], tab?: string | null): Promise<Call>
     people(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] }>
     send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
-    poll(options?: { after?: number, call?: Call['id'] | null, tab?: string | null, claim?: boolean, kind?: string | null }): Promise<PollResult>
+    poll(options?: PollOptions): Promise<PollResult>
     leave(callId: Call['id'], tab: string): void
     configuration(): Promise<RtcConfiguration>
+}
+
+export type RelayMode = 'polling' | 'quiet' | 'hub'
+
+export interface RelaySignalingOptions {
+    /** The label of the data channel signaling travels over; the same for everyone on the call. Default `holler:relay`. */
+    channel?: string
+    /** Milliseconds a signal waits for its peer to reach the hub before it goes over the backend (10000). */
+    patience?: number
+    /** Milliseconds the hub may be silent before this window polls again (10000): more than twice the hub's slowest poll. */
+    hubTimeout?: number
+    /** Characters a signal may have to go over a channel (60000); a larger one goes over the backend. */
+    maxMessage?: number
+}
+
+export interface RelaySignalingEventMap {
+    modechange: CustomEvent<{ mode: RelayMode }>
+}
+
+/**
+ * Signaling over the call's data channels, around another adapter: the hub (named by the
+ * backend) polls, everyone connected to it stops polling and falls back to the backend
+ * whenever the hub is not there.
+ */
+export class RelaySignaling extends EventTarget implements Signaling {
+    constructor(upstream: Signaling, options?: RelaySignalingOptions)
+    readonly upstream: Signaling
+    /** `hub`: this window polls for the others; `quiet`: it lives off what the hub passes on; `polling`: it asks the backend itself. */
+    readonly mode: RelayMode
+    readonly quiet: boolean
+    /** Requests made to the backend (`polls`, `posts`), polls answered without one (`spared`), signals sent over a channel (`direct`, `viaHub`) and passed on as the hub (`relayed`). */
+    readonly stats: { polls: number, spared: number, posts: number, direct: number, viaHub: number, relayed: number }
+    start(callees: UserId | UserId[], tab: string): Promise<Call>
+    answer(callId: Call['id'], tab: string): Promise<Call>
+    decline(callId: Call['id']): Promise<Call>
+    hangup(callId: Call['id']): Promise<Call>
+    invite(callId: Call['id'], userId: UserId): Promise<Call>
+    hold(callId: Call['id']): Promise<Call>
+    resume(callId: Call['id'], tab?: string | null): Promise<Call>
+    people(query?: string, callId?: Call['id'] | null): Promise<{ people: Person[] } | Person[]>
+    send(callId: Call['id'], type: SignalType | string, payload: Record<string, unknown>, to?: UserId | null): Promise<unknown>
+    poll(options?: PollOptions): Promise<PollResult>
+    leave(callId: Call['id'], tab: string): void
+    configuration(): Promise<RtcConfiguration>
+    attach(client: CallClient): void
+    detach(client: CallClient): void
+
+    addEventListener<K extends keyof RelaySignalingEventMap>(type: K, listener: (event: RelaySignalingEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void
+    addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void
+    removeEventListener<K extends keyof RelaySignalingEventMap>(type: K, listener: (event: RelaySignalingEventMap[K]) => void, options?: boolean | EventListenerOptions): void
+    removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions): void
 }
 
 /** A participant on the roster: what the server says, what they told us, what the topology gives. */
@@ -329,6 +413,10 @@ export class CallClient extends EventTarget {
     handOff(): void
     takeOver(): Promise<boolean>
     leave(): void
+    /** Ask the backend now instead of at the next interval. */
+    pollNow(): void
+    /** Apply what a poll would have answered, handed over by a signaling adapter that is pushed to. With `call`, dropped unless this window is still on that call. */
+    deliver(data: Partial<PollResult>, options?: { call?: Call['id'] | null }): Promise<void>
 
     addEventListener<K extends keyof CallClientEventMap>(type: K, listener: (event: CallClientEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void
     addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void

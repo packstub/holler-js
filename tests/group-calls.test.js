@@ -408,6 +408,44 @@ describe('a group call', () => {
         expect(ion.state).toBe('idle')
         expect(ion.events('ended')[0].reason).toBe('dropped')
     })
+
+    it('keeps waiting, without a drop, on a backend that rings again once fewer than two people are left', async () => {
+        const { ion, ana, mihai, callId } = await group()
+        // A meeting room: the call stays open and goes back to ringing instead of ending.
+        server.end = (id) => { server.calls.get(Number(id)).status = 'ringing' }
+
+        await ana.hangUp()
+        await settle()
+        expect(ion.state).toBe('active')
+
+        // Mihai's connection goes before the poll that says he left: the drop clock starts.
+        ion.topology.link('mihai').pc.setConnectionState('failed')
+        await settle(10)
+        expect(ion.state).toBe('reconnecting')
+
+        await mihai.hangUp()
+        await settle()
+        expect(server.calls.get(callId).status).toBe('ringing')
+        expect(ion.state).toBe('calling')
+
+        await settle(1500)
+        expect(ion.state).toBe('calling')
+        expect(ion.events('ended')).toEqual([])
+        expect(server.log.filter(([user, action]) => user === 'ion' && action === 'hangup')).toEqual([])
+
+        // Someone joins the open call: it connects as usual.
+        const dana = client('dana')
+        dana.start()
+        await ion.invite('dana')
+        await settle()
+        await dana.accept()
+        await settle()
+        connectAll(ion, dana)
+        await settle()
+
+        expect(ion.state).toBe('active')
+        expect(dana.state).toBe('active')
+    })
 })
 
 describe('topologies', () => {

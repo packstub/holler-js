@@ -23,6 +23,8 @@
  *   poll({ after, call, tab, claim, kind }) → { call, incoming, on_hold, signals, cursor }   (claim: this window wants my side; kind: only calls of that kind;
  *                                                on_hold: the call I put on hold, if any. The poll parameter `claim` is about windows, not about that.)
  *   leave(callId, tab)                → void     (optional; a beacon as the page unloads)
+ *   attach(client) / detach(client)   → void     (optional; the CallClient the adapter was given to, for one that works
+ *                                                with the call itself or is pushed to: see `deliver()` and RelaySignaling)
  *
  * A failed request rejects with an Error carrying `status` (HTTP) and `reason` (`busy`, `not_ringing`,
  * `not_allowed`, `full`, `ended`, `too_large` from the Laravel backend).
@@ -216,12 +218,15 @@ export class HttpSignaling {
         return this.request('POST', this.url('signal', callId), to === null || to === undefined ? { type, payload } : { type, payload, to })
     }
 
-    poll({ after = 0, call = null, tab = null, claim = false, kind = this.kind } = {}) {
+    poll({ after = 0, call = null, tab = null, claim = false, kind = this.kind, relay = false, present = null } = {}) {
         const query = new URLSearchParams({ after: String(after) })
         if (call) query.set('call', String(call))
         if (tab) query.set('tab', tab)
         if (claim) query.set('claim', '1')
         if (kind) query.set('kind', kind)
+        // From RelaySignaling: this window can take signaling over a data channel, and (the hub) who is connected to it.
+        if (relay) query.set('relay', '1')
+        if (present?.length) query.set('present', present.join(','))
 
         return this.request('GET', `${this.routes.poll}?${query}`)
     }
@@ -238,6 +243,466 @@ export class HttpSignaling {
         if (navigator.sendBeacon?.(url, body)) return
 
         this.fetch(url, { method: 'POST', credentials: 'same-origin', body, keepalive: true }).catch(() => {})
+    }
+}
+
+// The data channel RelaySignaling talks over, one to every peer.
+const RELAY_CHANNEL = 'holler:relay'
+
+/**
+ * Signaling over the call's own data channels, so that one browser polls instead of
+ * all of them. It wraps another signaling adapter (`HttpSignaling`, say) and has the
+ * same interface:
+ *
+ *   - One participant is the hub: the backend says who (`hub: true` on the call for
+ *     me, on a peer for them). The hub keeps polling. With each poll it tells the
+ *     backend who is connected to it (`present`), which keeps their side alive there,
+ *     and gets back what each of them would have been answered (`relay.views`), which
+ *     it passes on over the channel.
+ *   - Everyone with an open channel to the hub stops polling (`mode` is `quiet`) and
+ *     lives off what the hub passes on.
+ *   - A signal goes straight to a peer I have a channel to; through the hub to a peer
+ *     the hub has one to (a newcomer I am not connected to yet); and over the backend
+ *     otherwise. Signals for a peer that relays too, and is on its way to the hub, wait
+ *     up to `patience` for it.
+ *   - Without a hub, or when the channel to it closes or goes silent for `hubTimeout`,
+ *     this is the wrapped adapter and nothing else: every poll goes to the backend.
+ *
+ * The hub sees and could change the signals it relays (SDP, ICE candidates), the way
+ * the signaling server can; the media stays encrypted between the browsers.
+ *
+ * What goes over the channel (JSON): `{ t: 'signal', type, payload, to? | from? }`,
+ * `{ t: 'undelivered', to, type, payload }`, and from the hub `{ t: 'view', data, reach }`,
+ * `{ t: 'ping', reach }` and `{ t: 'poll' }` (signals wait on the backend: ask it once).
+ *
+ * Events: `modechange { mode }`, mode being `polling`, `quiet` or `hub`.
+ */
+export class RelaySignaling extends EventTarget {
+    /**
+     * @param {object} upstream  the signaling adapter that reaches the backend
+     * @param {object} [options]
+     * @param {string} [options.channel]  the label of the data channel (the same for everyone on the call)
+     * @param {number} [options.patience]  milliseconds a signal waits for its peer to reach the hub before it goes over the backend
+     * @param {number} [options.hubTimeout]  milliseconds the hub may be silent before this window polls again; more than twice the hub's slowest poll
+     * @param {number} [options.maxMessage]  characters a signal may have to go over a channel; a larger one goes over the backend
+     */
+    constructor(upstream, { channel = RELAY_CHANNEL, patience = 10000, hubTimeout = 10000, maxMessage = 60000 } = {}) {
+        super()
+        this.upstream = upstream
+        this.label = channel
+        this.patience = patience
+        this.hubTimeout = hubTimeout
+        this.maxMessage = maxMessage
+        this.client = null
+        // Requests to the backend, and what the channels spared: for whoever counts.
+        this.stats = { polls: 0, spared: 0, posts: 0, direct: 0, viaHub: 0, relayed: 0 }
+        // The open channel to each peer, by user id.
+        this.channels = new Map()
+        this.mode = 'polling'
+        this.forget()
+
+        for (const name of ['invite', 'hold', 'resume', 'people', 'configuration', 'leave']) {
+            if (typeof upstream?.[name] !== 'function') this[name] = undefined
+        }
+
+        this.onChannel = ({ detail: { peer, channel: opened, label } }) => { if (label === this.label) this.opened(String(peer.id), opened) }
+        // The connection to the hub went down before its channel said so.
+        this.onPeers = () => { if (this.quiet && ! this.hubConnected()) this.wake() }
+    }
+
+    // ---- what CallClient calls -------------------------------------------------
+
+    attach(client) {
+        this.client = client
+        // The last of the channels, so the ones the app lists keep their place (channels pair up by it).
+        if (! client.channelLabels.includes(this.label)) client.channelLabels.push(this.label)
+        client.addEventListener('datachannel', this.onChannel)
+        client.addEventListener('peers', this.onPeers)
+    }
+
+    detach(client) {
+        client.removeEventListener('datachannel', this.onChannel)
+        client.removeEventListener('peers', this.onPeers)
+        this.forget()
+        this.channels.clear()
+        this.client = null
+    }
+
+    start(callees, tab) { return this.upstream.start(callees, tab) }
+    answer(callId, tab) { return this.upstream.answer(callId, tab) }
+    invite(callId, userId) { return this.upstream.invite(callId, userId) }
+    resume(callId, tab = null) { return this.upstream.resume(callId, tab) }
+    people(query = '', callId = null) { return this.upstream.people(query, callId) }
+    configuration() { return this.upstream.configuration() }
+    leave(callId, tab) { return this.upstream.leave(callId, tab) }
+
+    decline(callId) { return this.letGo(callId, () => this.upstream.decline(callId)) }
+    hangup(callId) { return this.letGo(callId, () => this.upstream.hangup(callId)) }
+    hold(callId) { return this.letGo(callId, () => this.upstream.hold(callId)) }
+
+    /** The backend's answer, or, while the hub passes it on, what the hub last passed on. */
+    async poll(params = {}) {
+        const callId = params.call ?? null
+
+        if (this.canRest(params)) {
+            this.setMode('quiet')
+            this.stats.spared++
+
+            return { incoming: null, on_hold: null, ...this.told, signals: [], cursor: params.after ?? 0 }
+        }
+
+        if (this.quiet) this.setMode('polling')
+        this.owed = false
+        const present = this.isHub ? this.present() : []
+        this.stats.polls++
+
+        let data
+        try {
+            data = await this.upstream.poll({ ...params, relay: true, ...(present.length ? { present } : {}) })
+        } catch (error) {
+            // The backend is away, the hub is not: the others would only fail to reach it too.
+            if (this.isHub) this.broadcast({ t: 'ping', reach: this.reachable() })
+            throw error
+        }
+
+        // Signals came over the backend: more may follow, and the next poll tells it these were read.
+        this.owed = (data?.signals?.length ?? 0) > 0
+        const wasHub = this.isHub
+        this.observe(data?.call ?? null, callId)
+        // Whoever reached me over the backend is answered that way, until a channel reaches them.
+        for (const signal of data?.signals ?? []) {
+            const from = signal.from === undefined || signal.from === null ? null : String(signal.from)
+            if (from !== null && this.way(from) === 'wait') this.impatient.add(from)
+        }
+        this.release()
+        // Also the last answer of a call that just ended: the others hear it from the hub.
+        if (this.isHub || (wasHub && data?.relay)) this.pass(data?.relay ?? null)
+        this.setMode(this.isHub ? 'hub' : 'polling')
+
+        return data
+    }
+
+    /** To one participant, or to everyone else on the call (`to` null), each by the shortest way there is. */
+    send(callId, type, payload, to = null) {
+        if (! this.view || String(this.view.id) !== String(callId)) return this.post(callId, type, payload, to)
+
+        const everyone = to === null || to === undefined
+        const targets = everyone
+            ? (this.view.peers ?? []).filter((peer) => peer.status === 'joined' || peer.status === 'ringing').map((peer) => String(peer.id))
+            : [String(to)]
+        // Nobody within reach of a channel: one request to the backend, as without relaying.
+        if (everyone && targets.every((target) => this.way(target) === 'backend')) return this.post(callId, type, payload, null)
+
+        return Promise.all(targets.map((target) => this.dispatch({ callId, type, payload, to: target })))
+    }
+
+    // ---- state -----------------------------------------------------------------
+
+    get quiet() { return this.mode === 'quiet' }
+
+    setMode(mode) {
+        if (this.mode === mode) return
+        this.mode = mode
+        this.dispatchEvent(new CustomEvent('modechange', { detail: { mode } }))
+    }
+
+    /** Nothing of a call is left here: the next one starts from the backend. */
+    forget() {
+        for (const waiting of this.held?.values() ?? []) clearTimeout(waiting.timer)
+        // The call as the backend (or the hub) last described it.
+        this.view = null
+        this.isHub = false
+        this.hubId = null
+        // Who the hub has a channel to, as the hub says.
+        this.reach = new Set()
+        // What the hub last passed on for me, in the shape of a poll's answer; null until it does.
+        this.told = null
+        this.heard = 0
+        // The backend has something for me that the channels do not carry: one poll goes there.
+        this.owed = false
+        // Signals waiting for their peer to reach the hub, by peer; and the peers no signal waits for any more.
+        this.held = new Map()
+        this.impatient = new Set()
+        if (this.mode !== 'polling') this.setMode('polling')
+    }
+
+    letGo(callId, request) {
+        if (this.view && String(this.view.id) === String(callId)) this.forget()
+
+        return request()
+    }
+
+    /** Take the call as it is now: who the hub is, and whether that is me. */
+    observe(call, asked = null) {
+        if (! call || call.status === 'ended') {
+            if (this.view && (asked === null || String(asked) === String(this.view.id))) this.forget()
+            return
+        }
+
+        if (this.view && String(this.view.id) !== String(call.id)) this.forget()
+
+        const hub = (call.peers ?? []).find((peer) => peer.hub === true && peer.status === 'joined')
+        const hubId = hub ? String(hub.id) : null
+        if (hubId !== this.hubId) {
+            this.reach = new Set()
+            this.told = null
+        }
+        this.view = call
+        this.isHub = call.hub === true
+        this.hubId = this.isHub ? null : hubId
+
+        // Signals kept for someone who left go nowhere.
+        const live = new Set((call.peers ?? []).filter((peer) => peer.status === 'joined' || peer.status === 'ringing').map((peer) => String(peer.id)))
+        for (const [id, waiting] of this.held) {
+            if (live.has(id)) continue
+            clearTimeout(waiting.timer)
+            this.held.delete(id)
+        }
+        for (const id of this.impatient) if (! live.has(id)) this.impatient.delete(id)
+        this.release()
+    }
+
+    /** Whether this poll can be answered from what the hub passed on. */
+    canRest({ call = null, claim = false } = {}) {
+        return ! this.isHub && ! this.owed && claim && this.told !== null && this.view !== null && call !== null
+            && String(call) === String(this.view.id) && this.hubId !== null && this.open(this.hubId)
+            && Date.now() - this.heard <= this.hubTimeout && this.hubConnected()
+    }
+
+    hubConnected() {
+        return this.hubId !== null && this.connected(this.hubId)
+    }
+
+    connected(id) {
+        return this.client?.peers.find((peer) => peer.id === id)?.connected === true
+    }
+
+    open(id) {
+        return this.channels.get(id)?.readyState === 'open'
+    }
+
+    /** Back to the backend, now. */
+    wake() {
+        this.setMode('polling')
+        this.told = null
+        this.client?.pollNow()
+    }
+
+    // ---- the channels ----------------------------------------------------------
+
+    opened(id, channel) {
+        this.channels.set(id, channel)
+        channel.addEventListener('message', ({ data }) => this.receive(id, channel, data))
+        channel.addEventListener('close', () => {
+            if (this.channels.get(id) !== channel) return
+            this.channels.delete(id)
+            this.closed(id)
+        })
+
+        if (id === this.hubId) this.heard = Date.now()
+        this.release()
+
+        if (this.isHub) {
+            this.broadcast({ t: 'ping', reach: this.reachable() })
+            // The next poll names them as present, and brings what to pass on to them.
+            this.client?.pollNow()
+        }
+    }
+
+    closed(id) {
+        if (this.isHub) return this.broadcast({ t: 'ping', reach: this.reachable() })
+        if (id !== this.hubId) return undefined
+
+        this.reach = new Set()
+        if (this.quiet || this.told) this.wake()
+
+        return undefined
+    }
+
+    /** Write to a peer's channel; false when there is none, or the message does not fit one. */
+    write(id, message) {
+        const channel = this.channels.get(id)
+        if (channel?.readyState !== 'open') return false
+
+        const text = JSON.stringify(message)
+        if (text.length > this.maxMessage) return false
+
+        try {
+            channel.send(text)
+        } catch {
+            return false
+        }
+
+        return true
+    }
+
+    broadcast(message) {
+        for (const id of this.channels.keys()) this.write(id, message)
+    }
+
+    reachable() {
+        return [...this.channels.keys()].filter((id) => this.open(id))
+    }
+
+    /** Who the hub answers for: an open channel, on a connection that is up. */
+    present() {
+        return this.reachable().filter((id) => this.connected(id))
+    }
+
+    /** The hub passes on what the backend said: to each peer its view, and a word to those with signals waiting there. */
+    pass(relay) {
+        const reach = this.reachable()
+        for (const id of reach) this.write(id, { t: 'view', data: relay?.views?.[id] ?? null, reach })
+        for (const id of relay?.pending ?? []) this.write(String(id), { t: 'poll' })
+    }
+
+    receive(id, channel, raw) {
+        if (this.channels.get(id) !== channel || ! this.view) return
+
+        let message
+        try {
+            message = JSON.parse(raw)
+        } catch {
+            return
+        }
+        if (message === null || typeof message !== 'object') return
+
+        const fromHub = id === this.hubId
+        if (fromHub) this.heard = Date.now()
+
+        if (message.t === 'signal') {
+            const { type, payload } = message
+            if (typeof type !== 'string') return
+
+            // For someone else: only the hub passes signals on.
+            if (message.to !== undefined && message.to !== null) {
+                if (! this.isHub) return
+                const to = String(message.to)
+                if (this.write(to, { t: 'signal', from: id, type, payload })) this.stats.relayed++
+                else this.write(id, { t: 'undelivered', to, type, payload })
+                return
+            }
+
+            // Only the hub speaks for others; anyone else is who their channel says.
+            const from = message.from === undefined || message.from === null ? id : String(message.from)
+            if (from !== id && ! fromHub) return
+            if (from !== id) this.reach.add(from)
+
+            const call = this.view.id
+            this.client?.deliver({ signals: [{ call: this.client.call?.id ?? call, type, payload, from }] }, { call })
+            if (from !== id) this.release()
+            return
+        }
+
+        if (! fromHub) return
+
+        if (message.t === 'undelivered') {
+            // The hub lost them meanwhile: the backend has the signal now.
+            const to = String(message.to)
+            this.reach.delete(to)
+            this.impatient.add(to)
+            this.post(this.view.id, message.type, message.payload, to).catch((error) => this.failed(error))
+        } else if (message.t === 'view' || message.t === 'ping') {
+            if (Array.isArray(message.reach)) this.reach = new Set(message.reach.map(String))
+
+            if (message.t === 'view') {
+                const told = message.data !== null && typeof message.data === 'object' ? message.data : null
+                this.told = told
+                if (! told) {
+                    // The backend has no answer for me through the hub: I ask it myself.
+                    if (this.quiet) this.wake()
+                } else {
+                    const resting = this.quiet
+                    const call = this.view.id
+                    if (told.call) this.observe(told.call, call)
+                    // Told while resting: applied now, not at the next (local) poll.
+                    if (resting) this.client?.deliver({ ...told, signals: [] }, { call })
+                }
+            }
+
+            this.release()
+        } else if (message.t === 'poll') {
+            this.owed = true
+            this.client?.pollNow()
+        }
+    }
+
+    // ---- the ways out ----------------------------------------------------------
+
+    /** How a signal reaches a peer now: `direct`, through the `hub`, `wait` for them to reach the hub, or the `backend`. */
+    way(id) {
+        if (this.open(id)) return 'direct'
+        if (this.isHub || this.hubId === null || id === this.hubId) return 'backend'
+        if (this.open(this.hubId) && this.reach.has(id)) return 'hub'
+
+        // Someone still ringing has not said yet whether their window relays (`relay` is null): worth the wait.
+        const peer = (this.view?.peers ?? []).find((candidate) => String(candidate.id) === id)
+        const relays = peer?.relay === true || (peer?.status === 'ringing' && (peer.relay ?? null) === null)
+
+        return relays && ! this.impatient.has(id) ? 'wait' : 'backend'
+    }
+
+    async dispatch(signal) {
+        const { callId, type, payload, to } = signal
+        const way = this.way(to)
+
+        if (way === 'direct' && this.write(to, { t: 'signal', type, payload })) {
+            this.stats.direct++
+            return undefined
+        }
+
+        if (way === 'hub' && this.write(this.hubId, { t: 'signal', to, type, payload })) {
+            this.stats.viaHub++
+            return undefined
+        }
+
+        if (way === 'wait') {
+            let waiting = this.held.get(to)
+            if (! waiting) {
+                // Not for ever: someone whose connection to the hub never comes up still gets it.
+                waiting = { signals: [], timer: setTimeout(() => this.giveUp(to), this.patience) }
+                this.held.set(to, waiting)
+            }
+            waiting.signals.push(signal)
+            return undefined
+        }
+
+        return this.post(callId, type, payload, to)
+    }
+
+    post(callId, type, payload, to) {
+        this.stats.posts++
+
+        return this.upstream.send(callId, type, payload, to)
+    }
+
+    /** Signals that waited for someone go out, in order, once there is a way that is not waiting. */
+    release() {
+        for (const [id, waiting] of [...this.held]) {
+            // Within reach, or no longer worth waiting for (their window does not relay, the hub is gone).
+            if (this.way(id) === 'wait') continue
+            this.flush(id, waiting)
+        }
+        for (const id of this.impatient) if (this.open(id) || this.reach.has(id)) this.impatient.delete(id)
+    }
+
+    giveUp(id) {
+        const waiting = this.held.get(id)
+        if (! waiting) return
+        this.impatient.add(id)
+        this.flush(id, waiting)
+    }
+
+    flush(id, waiting) {
+        clearTimeout(waiting.timer)
+        this.held.delete(id)
+        // One after the other: the backend hands them out in the order they arrive.
+        waiting.signals.reduce((sent, signal) => sent.then(() => this.dispatch(signal)).catch((error) => this.failed(error)), Promise.resolve())
+    }
+
+    failed(error) {
+        // 410: the call ended while the signal waited.
+        if (error?.status !== 410) this.client?.emit('error', { error })
     }
 }
 
@@ -747,6 +1212,10 @@ export class CallClient extends EventTarget {
         this.mediaRequest = null
         this.onVisibility = () => { if (! globalThis.document?.hidden) this.schedule(0) }
         this.onDeviceChange = () => this.emit('devices', { selected: { ...this.selected } })
+        // What the server said is applied one answer at a time, polled or delivered (see `deliver()`).
+        this.applied = Promise.resolve()
+        // A signaling adapter that works with the call itself (RelaySignaling uses its data channels).
+        this.signaling?.attach?.(this)
     }
 
     // ---- 1-on-1 conveniences ---------------------------------------------------
@@ -809,6 +1278,7 @@ export class CallClient extends EventTarget {
     destroy() {
         this.stop()
         this.leave()
+        this.signaling?.detach?.(this)
         this.epoch++
         this.topology?.leave()
         this.topology = null
@@ -874,7 +1344,7 @@ export class CallClient extends EventTarget {
             // Sent before this window hung up or declined: what it says is about a call that is gone here.
             .then((data) => {
                 this.failures = 0
-                return epoch === this.epoch ? this.handlePoll(data, call) : undefined
+                return this.apply(() => epoch === this.epoch ? this.handlePoll(data, call) : undefined)
             })
             .catch((error) => {
                 this.failures++
@@ -884,6 +1354,41 @@ export class CallClient extends EventTarget {
             })
             .finally(() => { this.inFlight = null; this.schedule(this.failures ? this.backoff() : undefined) })
         await this.inFlight
+    }
+
+    /** One answer after the other: a poll's and a delivered one never apply at the same time. */
+    apply(work) {
+        const done = this.applied.then(work)
+        this.applied = done.catch(() => {})
+
+        return done
+    }
+
+    /** Ask the server now instead of at the next interval: something said there is news. */
+    pollNow() {
+        this.schedule(0)
+    }
+
+    /**
+     * Take what a poll would have answered from somewhere else: a signaling adapter that is
+     * pushed to (a websocket, a data channel) hands it over as it arrives, instead of the
+     * client waiting for its next poll. `data` has the shape of a poll's answer and may be a
+     * part of one (only `signals`, say). With `call` set it is dropped unless this window is
+     * still on that call.
+     *
+     * @param {{ call?: object|null, incoming?: object|null, on_hold?: object|null, signals?: object[], cursor?: number }} data
+     * @param {{ call?: string|number|null }} [options]
+     */
+    deliver(data, { call = null } = {}) {
+        const epoch = this.epoch
+
+        return this.apply(() => {
+            if (epoch !== this.epoch) return undefined
+            if (call !== null && String(this.call?.id) !== String(call)) return undefined
+
+            // A part of an answer says nothing about the call on hold: it stays as it is.
+            return this.handlePoll({ ...data, on_hold: 'on_hold' in data ? data.on_hold : this.heldCall })
+        }).catch((error) => this.emit('error', { error }))
     }
 
     /** `asked` is the call id the poll named, so a call the server no longer returns is known to be gone. */

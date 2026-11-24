@@ -6,6 +6,7 @@ WebRTC calls (audio, video, screen share) for the browser, 1-on-1 and small grou
 - `MeshTopology` is how media travels by default: a direct `RTCPeerConnection` to every other participant, so no server touches the media. Right for up to four people; the `topology` option takes an SFU or relay adapter for bigger rooms, and the client never knows the difference.
 - A call survives a full page load: every window has a random `tab` id, a participant's side belongs to one window at a time, a fresh page claims the side, asks each peer for a new connection (`reset`) and offers again. Signals carry a session id so leftovers from an old connection are ignored.
 - `HttpSignaling` is the signaling adapter that ships: plain JSON endpoints, polled. A websocket or any other transport implements the same methods.
+- `RelaySignaling` goes around it when requests are what you pay for: one participant keeps polling and passes signaling on to everyone connected to it over a data channel, so the others stop polling. Off unless you use it. See [Relayed signaling](#relayed-signaling).
 - `CallWidget` draws the incoming toast, the call window, the chip and notices in plain DOM, with templates, labels and CSS custom properties to make it yours.
 
 ## Install
@@ -173,6 +174,8 @@ A `peer` in an event, and each entry of `client.peers`, is `{ id, name, avatar, 
 | `handOff()` | this window steps back to `elsewhere` while another window (a pop-out) answers or continues the call |
 | `takeOver()` | a window in `elsewhere` continues a call nobody holds any more (its pop-out closed) |
 | `leave()` | the `leave` beacon, for `pagehide` |
+| `pollNow()` | ask the backend now instead of at the next interval |
+| `deliver(data, { call })` | for a signaling adapter that is pushed to (a websocket, a data channel): apply what a poll would have answered, or a part of it (`{ signals }`), as it arrives; with `call` it is dropped unless this window is still on that call |
 | `destroy()` | stop polling, let go of the call and close the connections and the camera, without events |
 
 Properties: `state`, `call` (the server's call), `peers` and `peer`, `localStream`, `cameraStream` (the camera and microphone as asked for), `screenStream` (the shared screen, or null), `muted`, `cameraOff`, `sharing`, `tab` (this window's id), `selected` (the chosen devices), `quality` (the worst connection among the peers, or null), and `peerMuted`, `peerCameraOff`, `peerSharing`, `remoteStream` for the first peer.
@@ -228,7 +231,10 @@ send(callId, type, payload, to)      → void     // offer | answer | ice | rese
 poll({ after, call, tab, claim, kind }) → { call, incoming, on_hold, signals, cursor }   // kind: only calls of that kind; on_hold: the call I put on hold, if any
 leave(callId, tab)                   → void     // optional, a beacon as the page unloads
 configuration()                      → { iceServers, iceTransportPolicy }   // optional, ICE servers asked per call
+attach(client) / detach(client)      → void     // optional; the CallClient the adapter was given to, and its destroy()
 ```
+
+An adapter that is pushed to, instead of polled, keeps `poll` for the first answer and hands the client what arrives with `client.deliver(data)`; `attach(client)` gives it the client.
 
 A failed request rejects with an `Error` carrying `status` and, from Holler for Laravel, `reason` (`busy`, `not_ringing`, `not_allowed`, `full`, `ended`, `too_large`): the two 409s (busy, no longer ringing) are told apart by it.
 
@@ -252,6 +258,63 @@ A signal is `{ id, call, type, payload, from }`, `from` being the sender's user 
 | `fetch` | `globalThis.fetch` | your own fetch |
 
 `start` posts `{ callee, tab }` for one person and `{ callees, tab }` for a group; `send` adds `to` when set; `invite` posts `{ callee }`, `resume` posts `{ tab }`, `people` asks `?q=<words>&call=<id>`. [Holler for Laravel](https://github.com/packstub/holler) implements the server side; the README there documents the endpoints for other backends.
+
+## Relayed signaling
+
+Every window on a call polls for as long as the call lasts, although signaling is only needed to connect and to notice people come and go. Where each request counts (a serverless backend with a daily allowance, say), `RelaySignaling` moves it onto the call's own data channels: one participant, the **hub**, keeps polling, and everyone connected to the hub stops.
+
+```js
+import { CallClient, HttpSignaling, RelaySignaling } from '@packstub/holler'
+
+const relay = new RelaySignaling(new HttpSignaling({ routes }))
+const client = new CallClient({ signaling: relay, channels: ['annotations'] })
+
+relay.addEventListener('modechange', ({ detail: { mode } }) => console.log(mode))   // polling | quiet | hub
+```
+
+It is off unless you wrap your signaling in it, and it does nothing until the backend names a hub: on a backend that does not, it polls like the adapter inside it. Who the hub is stays the backend's decision (the host of a meeting, the caller of a call).
+
+How a call runs with it:
+
+1. The hub polls as always. With each poll it names the peers connected to it (`present`); the backend keeps their side of the call alive on the hub's word and answers with what each of them would have been told (`relay.views`), which the hub passes on.
+2. A newcomer joins over the backend and polls until its connection to the hub is up. From its first word from the hub it is `quiet`: its polls are answered from what the hub passes on, without a request.
+3. A signal takes the shortest way there is: straight to a peer I have a channel to; through the hub to a peer I am not connected to yet (the offer, the answer and the candidates between a newcomer and everyone already there); over the backend otherwise. A signal for a peer whose window relays too, and is still on its way to the hub, waits up to `patience` for it.
+4. The peers hear about each other from the hub: who joined, who left, that the call ended.
+
+What it falls back to, each time to plain polling:
+
+| When | What happens |
+| --- | --- |
+| No hub: it has not joined, it left, the backend names none | everyone polls; peers that are connected still signal each other over their channel |
+| The channel to the hub closes, or the connection to it drops | that window polls again at once, and rests again when a channel to the hub is back |
+| The hub goes silent (a frozen or throttled page) for `hubTimeout` | the same |
+| The hub reloads | its channels close, everyone polls, its new page reconnects over the backend, everyone rests again |
+| A window without `RelaySignaling` is on the call | it polls and signals over the backend; a quiet peer is told by the hub (`relay.pending`) to fetch what waits for it there |
+| A peer never reaches the hub | signals that waited for it go over the backend after `patience` |
+
+| Option | Default | What |
+| --- | --- | --- |
+| `channel` | `'holler:relay'` | the label of the data channel; `RelaySignaling` adds it after the client's own `channels`, so every window that relays must list the same `channels` |
+| `patience` | `10000` | milliseconds a signal waits for its peer to reach the hub before it goes over the backend |
+| `hubTimeout` | `10000` | milliseconds the hub may be silent before a quiet window polls again; keep it above twice the hub's slowest poll |
+| `maxMessage` | `60000` | characters a signal may have to go over a channel; a larger one goes over the backend |
+
+`relay.mode` is `hub`, `quiet` or `polling`; `relay.stats` counts the requests made (`polls`, `posts`) and the ones spared (`spared`, `direct`, `viaHub`, and `relayed` on the hub).
+
+**The hub's page must stay awake.** The others time out and poll again when it does not, so nothing breaks, but nothing is saved either. Browsers slow timers down in a background tab; keep `hubTimeout` generous if your hub polls slowly, and test the browsers you care about with the hub's tab in the background.
+
+**Trust.** The hub relays signaling, not media: audio and video stay encrypted between the browsers. But signaling carries the fingerprints that encryption is checked against, so a hub that changed them could put itself between two peers, exactly as the signaling server can today. Make the hub someone the call already trusts with that (its host). A peer only takes relayed signals and the roster from the participant the backend named as hub; anyone else speaks for themselves alone.
+
+### What a backend adds
+
+All optional: a backend without them is polled as before.
+
+- `poll` takes `relay` (this window relays) and, from the hub, `present` (the ids of the peers connected to it). `HttpSignaling` sends them as `relay=1` and `present=<id>,<id>`.
+- A `call` has `hub: true` when I am its hub; a peer has `hub: true` when they are, and `relay`: whether their window relays (`null` until it has polled).
+- For each peer in `present`, the hub's poll counts as that peer's heartbeat, and the answer carries `relay: { views, pending }`: `views[id]` is what a poll by that peer would answer (`call`, `on_hold`, plus anything of your own; it is handed to the peer's client as is), `pending` the ids with unread signals.
+- Name a hub only while its window relays and holds its side; accept `present` only from the hub.
+
+`tests/fakes.js` has it in a few lines (`FakeServer({ relay: true })`: the caller is the hub).
 
 ## The widget
 
@@ -306,7 +369,7 @@ The module also exports `labels`, `templates` and `icons` (the defaults), `patch
 
 Names and avatars come from the server and are whatever people typed. The default templates never put them into the HTML: they reach the page through the hooks (`data-holler-text` sets text, `data-holler-src` takes only http(s), relative, `blob:` and `data:image/` URLs). A template of your own that writes a value from the model into its HTML string must pass it through `escape()` first.
 
-`CallClient` methods not documented here (`tick`, `schedule`, `interval`, `backoff`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
+`CallClient` methods not documented here (`tick`, `schedule`, `interval`, `backoff`, `apply`, `handlePoll`, `join`, `resume`, `ring`, `placeCall`, `answerCall`, `doTakeOver`…) are internal: they may change in any release.
 
 ## Testing
 

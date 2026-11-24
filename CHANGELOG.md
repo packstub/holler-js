@@ -2,10 +2,12 @@
 
 All notable changes to `@packstub/holler` are documented in this file.
 
-## Unreleased
+## 1.1.0 — 2026-11-24
 
-- `RelaySignaling`: one participant keeps polling and passes signaling on over data channels, so everyone connected to it stops polling; everyone polls again whenever that participant is away. Off unless you wrap your signaling in it, and it needs a backend that names the hub (README, "Relayed signaling")
-- `client.deliver()` and `client.pollNow()` for a signaling adapter that is pushed to instead of polled
+Fewer requests to your backend during a call, if you want them, and a fix for meetings that stay open.
+
+- Optional relayed signaling: wrap your signaling in `RelaySignaling` and one participant, the hub, keeps polling while everyone connected to it rests and gets the news over a data channel. Everyone polls again whenever the hub is away. It needs a backend that names the hub; see "Relayed signaling" in the README
+- `client.deliver()` and `client.pollNow()`, for a signaling adapter that is pushed to (a websocket, say) instead of polled
 - Someone left alone in a call that rings again (a meeting that stays open) is no longer hung up as dropped after the reconnect timeout, and sees the call as calling instead of reconnecting
 
 ## 1.0.0 — 2026-11-18

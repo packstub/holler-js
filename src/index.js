@@ -1900,10 +1900,19 @@ export class CallClient extends EventTarget {
     /**
      * active while at least one peer's media flows and their window is alive;
      * waiting while everyone else in the call has it on hold; reconnecting
-     * otherwise, and dropped after the timeout.
+     * otherwise, and dropped after the timeout. A call that rings again (a backend that
+     * keeps it open while fewer than two people are in it) is calling, with no clock.
      */
     refreshState() {
-        if (! this.joined || ! this.call || this.call.status !== 'active') return
+        if (! this.joined || ! this.call) return
+
+        if (this.call.status !== 'active') {
+            clearTimeout(this.dropTimer)
+            this.dropTimer = null
+            this.tryingSince = null
+            if (this.call.status === 'ringing' && ['active', 'reconnecting', 'connecting', 'waiting'].includes(this.state)) this.setState('calling')
+            return
+        }
 
         const peers = [...this.roster.values()]
         const connected = peers.some((peer) => peer.status === 'joined' && peer.alive && this.topology.connected(peer))

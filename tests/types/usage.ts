@@ -1,5 +1,5 @@
 // Compiled by `npm run test:types` (tsc --noEmit): the README's examples against the declarations.
-import { CallClient, HttpSignaling, MeshTopology, drain, type Peer, type Topology } from '@packstub/holler'
+import { CallClient, HttpSignaling, MeshTopology, RelaySignaling, drain, type Peer, type Signaling, type Topology } from '@packstub/holler'
 import { CallWidget, escape, safeUrl, templates } from '@packstub/holler/widget'
 
 const signaling = new HttpSignaling({
@@ -46,6 +46,16 @@ async function run(): Promise<void> {
 
 const custom: Topology = new MeshTopology()
 
+// Relayed signaling: the same client, around the same HttpSignaling.
+const relay = new RelaySignaling(signaling, { patience: 10000, hubTimeout: 10000 })
+const relayed = new CallClient({ signaling: relay, channels: ['assist'] })
+relay.addEventListener('modechange', ({ detail: { mode } }) => console.log(mode === 'quiet', relay.stats.polls))
+relayed.pollNow()
+
+// A signaling adapter that is pushed to hands the client what arrives.
+const pushed: Pick<Signaling, 'poll' | 'attach' | 'detach'> = { poll: (options) => signaling.poll(options), attach: (attached) => console.log(attached.tab) }
+void relayed.deliver({ signals: [{ call: 1, type: 'state', payload: { muted: true }, from: 'ana' }] }, { call: 1 })
+
 const widget = new CallWidget({
     routes: { poll: '/calls/poll', store: '/calls', answer: '/a', decline: '/d', hangup: '/h', signal: '/s' },
     csrf: 'token',
@@ -56,4 +66,4 @@ const widget = new CallWidget({
 })
 widget.start()
 widget.toggleMute()
-console.log(safeUrl('https://example.com/a.png'), templates.tile, widget.model().names, run, custom)
+console.log(safeUrl('https://example.com/a.png'), templates.tile, widget.model().names, run, custom, pushed)

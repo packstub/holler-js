@@ -58,11 +58,19 @@ export class FakeDataChannel extends EventTarget {
     send(data) {
         if (this.readyState !== 'open') throw new Error('InvalidStateError')
         this.sent.push(data)
+        // Wired to the other side's channel (`joinChannels()`): it arrives there, in order, a moment later.
+        const remote = this.remote
+        if (remote) queueMicrotask(() => { if (remote.readyState === 'open') remote.dispatchEvent(Object.assign(new Event('message'), { data })) })
     }
 
     close() {
+        if (this.readyState === 'closed') return
         this.readyState = 'closed'
         this.dispatchEvent(new Event('close'))
+        // Closing one end closes the other.
+        const remote = this.remote
+        this.remote = null
+        if (remote?.readyState === 'open') remote.close()
     }
 
     // ---- what the network would do ------------------------------------------
@@ -202,6 +210,22 @@ export class FakeRTCPeerConnection extends EventTarget {
     }
 }
 
+/**
+ * The data channels of two connections that face each other come up: each one is open
+ * and what one side sends arrives on the other. `a` and `b` are the `Link`s (or anything
+ * with `channels`, a Map by label) the two clients have to each other.
+ */
+export function joinChannels(a, b) {
+    for (const [label, channel] of a.channels) {
+        const other = b.channels.get(label)
+        if (! other) continue
+        channel.remote = other
+        other.remote = channel
+        if (channel.readyState !== 'open') channel.open()
+        if (other.readyState !== 'open') other.open()
+    }
+}
+
 /** A camera and a microphone, or whatever `getUserMedia` should answer with. */
 export function fakeDevices({ camera = true } = {}) {
     const getUserMedia = vi.fn(async ({ audio, video }) => {
@@ -250,8 +274,11 @@ const LIVE = ['ringing', 'joined', 'on_hold']
  * pushed around by a test (end a call, make a side go quiet).
  */
 export class FakeServer {
-    constructor({ claimSeconds = 5 } = {}) {
+    constructor({ claimSeconds = 5, relay = false } = {}) {
         this.claimSeconds = claimSeconds
+        // Relayed signaling (RelaySignaling): the caller is the hub while a window of theirs that relays
+        // holds their side. The hub's polls answer for the people connected to it (`present`).
+        this.relay = relay
         this.calls = new Map()
         this.signals = []
         this.nextCallId = 1
@@ -428,8 +455,9 @@ export class FakeServer {
                 if (mine && mine.tab === tab) mine.tab = null
             },
 
-            async poll({ after = 0, call: currentId = null, tab = null, claim = false, kind = null } = {}) {
+            async poll({ after = 0, call: currentId = null, tab = null, claim = false, kind = null, relay = false, present = null } = {}) {
                 server.log.push([userId, 'poll', currentId, tab, claim])
+                const asked = after
                 const mine = liveCallsOf(userId).filter((c) => kind === null || c.kind === kind).sort((a, b) => b.id - a.id)
 
                 let current = currentId ? server.calls.get(Number(currentId)) ?? null : (mine.find((c) => me(c).status === 'joined') ?? null)
@@ -456,8 +484,12 @@ export class FakeServer {
                 // Asking is the heartbeat of someone away.
                 if (onHold) me(onHold).seen_at = server.now
                 const signals = claimed ? server.signals.filter((s) => s.to_user_id === userId && s.call === current.id && s.id > after) : []
+                // What this window has read (the Laravel backend deletes it); a window that relays says so with its polls.
+                if (claimed) me(current).read = Math.max(me(current).read ?? 0, asked)
+                if (current && currentId && current.status !== 'ended') me(current).relay = Boolean(relay)
 
                 return {
+                    ...(claimed && server.isHub(current, me(current)) ? { relay: server.answerFor(current, present ?? []) } : {}),
                     call: current ? server.present(current, userId, tab) : null,
                     incoming: incoming ? server.present(incoming, userId, tab) : null,
                     on_hold: onHold ? server.present(onHold, userId, tab) : null,
@@ -494,15 +526,47 @@ export class FakeServer {
         this.signals = this.signals.filter((s) => ! (s.call === found.id && s.to_user_id === mine.user_id))
     }
 
+    isClaimed(p) {
+        return p.tab !== null && p.seen_at !== null && this.now - p.seen_at <= this.claimSeconds
+    }
+
+    /** The hub of a call: its caller, in the call with a window that relays. */
+    isHub(found, p) {
+        return Boolean(this.relay) && found.status !== 'ended' && p.user_id === found.caller_id && p.status === 'joined' && p.relay === true && this.isClaimed(p)
+    }
+
+    /**
+     * The hub's poll answers for the people connected to it: they are seen (their own windows
+     * do not poll), each gets what a poll of theirs would say (`views`), and the ones with
+     * signals waiting unread are named (`pending`).
+     */
+    answerFor(found, present) {
+        const views = {}
+        const pending = []
+
+        for (const id of present) {
+            const p = found.participants.find((candidate) => String(candidate.user_id) === String(id))
+            if (! p || p.user_id === found.caller_id) continue
+            if (p.status === 'joined' && p.tab !== null) p.seen_at = this.now
+            const mine = found.status === 'ended' || (LIVE.includes(p.status) && p.status !== 'on_hold')
+            views[p.user_id] = { call: mine ? this.present(found, p.user_id, p.tab) : null, on_hold: p.status === 'on_hold' ? this.present(found, p.user_id, p.tab) : null }
+            if (this.signals.some((s) => s.call === found.id && s.to_user_id === p.user_id && s.id > (p.read ?? 0))) pending.push(p.user_id)
+        }
+
+        return { views, pending }
+    }
+
     present(found, me, tab = null) {
         const mine = found.participants.find((p) => p.user_id === me)
-        const isClaimed = (p) => p.tab !== null && p.seen_at !== null && this.now - p.seen_at <= this.claimSeconds
+        const isClaimed = (p) => this.isClaimed(p)
+        // `relay` is null until a window of theirs has polled for this call.
+        const relayed = (p) => this.relay ? { relay: p.relay ?? null, hub: this.isHub(found, p) } : {}
         const peers = found.participants
             .filter((p) => p.user_id !== me)
             .sort((a, b) => a.seat - b.seat)
             .map((p) => ({
                 id: p.user_id, name: this.names[p.user_id] ?? p.user_id, avatar: null, seat: p.seat, status: p.status,
-                claimed: isClaimed(p), seen_ago: p.seen_at === null ? null : this.now - p.seen_at,
+                claimed: isClaimed(p), seen_ago: p.seen_at === null ? null : this.now - p.seen_at, ...relayed(p),
             }))
         const first = peers.find((p) => LIVE.includes(p.status)) ?? peers[0] ?? null
 
@@ -517,6 +581,7 @@ export class FakeServer {
             on_hold: mine.status === 'on_hold',
             answered_at: found.answered_at,
             claimed_elsewhere: isClaimed(mine) && mine.tab !== tab,
+            ...(this.relay ? { hub: this.isHub(found, mine) } : {}),
             peers,
             peer: first ? { id: first.id, name: first.name, avatar: first.avatar } : null,
             peer_claimed: first?.claimed ?? false,

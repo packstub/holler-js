@@ -1,0 +1,69 @@
+name: Publish to npm
+
+# A `v*` tag stages the package on npm through trusted publishing (OIDC, no
+# token stored here). npmjs.com allows this workflow to stage only, so nothing
+# goes live until a maintainer approves the staged version on npmjs.com (or
+# `npm stage approve <id>`), which always asks for 2FA.
+#
+# A manual run with `tag` stages an existing tag, e.g. one pushed before this
+# workflow existed.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to stage on npm, e.g. v1.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token npm trusts
+
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+
+jobs:
+  publish:
+    name: Stage the package on npm
+    runs-on: ubuntu-latest
+
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      # No dependency cache: what gets published is built from a clean install.
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      # Staged publishing needs npm 11.15 or later.
+      - name: Update npm
+        run: npm install --global npm@^11.15.0 && npm --version
+
+      - name: Check the tag matches package.json
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match package.json version $version."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      # test:dist builds dist/ and runs the suite against it: what gets published.
+      - name: Test the build
+        run: npm run test:dist
+
+      - name: Stage on npm
+        run: npm stage publish
